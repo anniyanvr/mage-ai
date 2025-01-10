@@ -1,12 +1,13 @@
 import os
 import traceback
 from dataclasses import asdict, dataclass, is_dataclass
-from typing import Dict
+from typing import Dict, Optional
 
 import yaml
 
 from mage_ai.shared.hash import merge_dict
 from mage_ai.shared.strings import camel_to_snake_case
+from mage_ai.shared.yaml import load_yaml
 
 
 @dataclass
@@ -56,3 +57,29 @@ class BaseConfig:
 
     def to_dict(self) -> Dict:
         return asdict(self)
+
+    @classmethod
+    def load_file(self, config_path: Optional[str] = None, config: Optional[Dict] = None) -> Dict:
+        """
+        Load configuration from a file and merge it with the provided config.
+
+        Args:
+            config_path (Optional[str], optional): Path to the configuration file.
+                Defaults to None.
+            config (Optional[Dict], optional): Existing configuration to merge with.
+                Defaults to None.
+
+        Returns:
+            Dict: Merged dictionary of configurations.
+        """
+        config = config or {}
+        if not config_path:
+            return config
+
+        try:
+            with open(config_path, 'r') as stream:
+                file_config = load_yaml(stream)
+                return merge_dict(config, file_config)
+        except yaml.YAMLError as e:
+            print(e)
+            return config

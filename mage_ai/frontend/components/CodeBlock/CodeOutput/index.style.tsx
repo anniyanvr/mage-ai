@@ -12,7 +12,7 @@ import { SHARED_STYLES } from '@oracle/elements/Text';
 
 export const ContainerStyle = styled.div<{
   addBottomPadding?: boolean;
-  executedAndIdle: boolean;
+  executedAndIdle?: boolean;
   showBorderTop?: boolean;
 } & BorderColorShareProps>`
   ${BORDER_COLOR_SHARED_STYLES}
@@ -46,12 +46,14 @@ export const ContainerStyle = styled.div<{
   `}
 `;
 
-export const OutputRowStyle = styled.div<{
+export type OutputRowProps = {
   contained?: boolean;
   first?: boolean;
   last?: boolean;
   normalPadding?: boolean;
-}>`
+};
+
+export const OutputRowStyle = styled.div<OutputRowProps>`
   ${props => props.first && `
     padding-top: ${UNIT * PADDING_UNITS}px;
   `}
@@ -124,4 +126,10 @@ export const ExtraInfoBorderStyle = styled.div`
   ${props => `
     border-top: 1px solid ${(props.theme.borders || dark.borders).medium};
   `}
+`;
+
+export const MultiOutputStyle = styled.div`
+  .inactive {
+    display: none;
+  }
 `;

@@ -11,8 +11,9 @@ import Checkbox from '@oracle/elements/Checkbox';
 import FlexContainer from '@oracle/components/FlexContainer';
 import Headline from '@oracle/elements/Headline';
 import Link from '@oracle/elements/Link';
-import PipelineType from '@interfaces/PipelineType';
+import PipelineType, { ConcurrencyConfigRunLimitReachedActionEnum } from '@interfaces/PipelineType';
 import Select from '@oracle/elements/Inputs/Select';
+import SetupSection, { SetupSectionRow } from '@components/shared/SetupSection';
 import Spacing from '@oracle/elements/Spacing';
 import TagType from '@interfaces/TagType';
 import TagsAutocompleteInputField from '@components/Tags/TagsAutocompleteInputField';
@@ -20,6 +21,7 @@ import Text from '@oracle/elements/Text';
 import TextInput from '@oracle/elements/Inputs/TextInput';
 import api from '@api';
 import usePrevious from '@utils/usePrevious';
+import useProject from '@utils/models/project/useProject';
 import { EXECUTOR_TYPES } from '@interfaces/ExecutorType';
 import {
   LOCAL_STORAGE_KEY_PIPELINE_EDIT_BLOCK_OUTPUT_LOGS,
@@ -32,7 +34,7 @@ import {
 } from '@oracle/styles/units/spacing';
 import { get, set } from '@storage/localStorage';
 import { isEqual } from '@utils/hash';
-import { isJsonString } from '@utils/string';
+import { capitalize, isJsonString } from '@utils/string';
 import { pushUnique } from '@utils/array';
 
 type PipelineSettingsProps = {
@@ -46,6 +48,9 @@ function PipelineSettings({
   pipeline,
   updatePipeline,
 }: PipelineSettingsProps) {
+  const {
+    project,
+  } = useProject();
   const refExecutorTypeSelect = useRef(null);
   const refExecutorTypeTextInput = useRef(null);
 
@@ -158,36 +163,189 @@ function PipelineSettings({
       pipelineTags,
     ]);
 
+  const projectPipelineSettings = useMemo(() => project?.pipelines?.settings, [project]);
+  const saveInCodeAutomaticallyToggled =
+    useMemo(() => projectPipelineSettings?.triggers?.save_in_code_automatically
+      && typeof pipelineAttributes?.settings?.triggers?.save_in_code_automatically === 'undefined',
+    [
+      pipelineAttributes,
+      projectPipelineSettings,
+    ]);
+
   return (
     <Spacing p={PADDING_UNITS}>
-      <TextInput
-        label="Pipeline name"
-        onChange={e => setPipelineAttributes(prev => ({
-          ...prev,
-          name: e.target.value,
-        }))}
-        primary
-        required
-        setContentOnMount
-        value={pipelineAttributes?.name || ''}
-      />
-
-      <Spacing mt={UNITS_BETWEEN_ITEMS_IN_SECTIONS}>
-        <Checkbox
-          checked={!!pipelineAttributes?.run_pipeline_in_one_process}
-          label="Run pipeline in a single process"
-          onClick={() => setPipelineAttributes(prev => ({
-            ...prev,
-            run_pipeline_in_one_process: !prev?.run_pipeline_in_one_process,
-          }))}
+      <SetupSection title="Details">
+        <SetupSectionRow
+          invalid={pipelineAttributesTouched && !pipelineAttributes?.name}
+          textInput={{
+            onChange: e => setPipelineAttributes(prev => ({
+              ...prev,
+              name: e.target.value,
+            })),
+            value: pipelineAttributes?.name,
+          }}
+          title="Pipeline name"
         />
 
-        <Spacing mt={1}>
-          <Text muted small>
-            When enabled, this setting allows sharing of objects and memory space across blocks
-            within a single pipeline.
-          </Text>
-        </Spacing>
+        <SetupSectionRow
+          textInput={{
+            onChange: e => setPipelineAttributes(prev => ({
+              ...prev,
+              description: e.target.value,
+            })),
+            placeholder: 'Enter description...',
+            value: pipelineAttributes?.description || '',
+          }}
+          title="Pipeline description"
+        />
+
+        <SetupSectionRow
+          description="When enabled, this setting allows sharing of objects and memory space across blocks within a single pipeline."
+          title="Run pipeline in a single process"
+          toggleSwitch={{
+            checked: !!pipelineAttributes?.run_pipeline_in_one_process,
+            onCheck: (valFunc: (val: boolean) => boolean) => setPipelineAttributes(prev => ({
+              ...prev,
+              run_pipeline_in_one_process: valFunc(prev?.run_pipeline_in_one_process),
+            })),
+          }}
+        />
+
+        <SetupSectionRow
+          description={(
+            <>
+              <Text muted small>
+                Every time a trigger is created or updated in this pipeline,
+                it’ll be automatically be persisted it in code.
+              </Text>
+
+              {projectPipelineSettings?.triggers?.save_in_code_automatically && (
+                <Text small warning>
+                  This settings is enabled at the project level.
+                  Changing the value here will only affect this pipeline.
+                </Text>
+              )}
+            </>
+          )}
+          title="Save triggers in code automatically"
+          toggleSwitch={{
+            checked: saveInCodeAutomaticallyToggled || !!pipelineAttributes?.settings?.triggers?.save_in_code_automatically,
+            onCheck: (valFunc: (val: boolean) => boolean) => setPipelineAttributes(prev => ({
+              ...prev,
+              settings: {
+                ...prev?.settings,
+                triggers: {
+                  ...prev?.settings?.triggers,
+                  save_in_code_automatically: valFunc(
+                    saveInCodeAutomaticallyToggled ||  prev?.settings?.triggers?.save_in_code_automatically,
+                  ),
+                },
+              },
+            })),
+          }}
+        />
+      </SetupSection>
+
+      <Spacing mt={UNITS_BETWEEN_SECTIONS}>
+        <SetupSection title="Pipeline level concurrency">
+          <SetupSectionRow
+            description={(
+              <>
+                <Text muted small>
+                  Limit the concurrent pipeline runs across all trigers in this pipeline.
+                </Text>
+              </>
+            )}
+            textInput={{
+              monospace: true,
+              onChange: e => setPipelineAttributes(prev => ({
+                ...prev,
+                concurrency_config: {
+                  ...prev?.concurrency_config,
+                  pipeline_run_limit_all_triggers: Number(e.target.value),
+                },
+              })),
+              placeholder: 'e.g. 40',
+              type: 'number',
+              value: String(pipelineAttributes?.concurrency_config?.pipeline_run_limit_all_triggers || ''),
+            }}
+            title="Pipeline run limit across all triggers"
+          />
+
+          <SetupSectionRow
+            description={(
+              <>
+                <Text muted small>
+                  Limit the concurrent pipeline runs in a single trigger for this pipeline.
+                </Text>
+              </>
+            )}
+            textInput={{
+              monospace: true,
+              onChange: e => setPipelineAttributes(prev => ({
+                ...prev,
+                concurrency_config: {
+                  ...prev?.concurrency_config,
+                  pipeline_run_limit: Number(e.target.value),
+                },
+              })),
+              placeholder: 'e.g. 10',
+              type: 'number',
+              value: String(pipelineAttributes?.concurrency_config?.pipeline_run_limit || ''),
+            }}
+            title="Pipeline run limit in 1 trigger"
+          />
+
+          <SetupSectionRow
+            description={(
+              <>
+                <Text muted small>
+                  Limit the concurrent blocks runs in one pipeline run.
+                </Text>
+              </>
+            )}
+            textInput={{
+              monospace: true,
+              onChange: e => setPipelineAttributes(prev => ({
+                ...prev,
+                concurrency_config: {
+                  ...prev?.concurrency_config,
+                  block_run_limit: Number(e.target.value),
+                },
+              })),
+              placeholder: 'e.g. 20',
+              type: 'number',
+              value: String(pipelineAttributes?.concurrency_config?.block_run_limit || ''),
+            }}
+            title="Block run limit"
+          />
+
+          <SetupSectionRow
+            description={(
+              <>
+                <Text muted small>
+                  Choose whether to wait or skip when the pipeline run limit is reached.
+                </Text>
+              </>
+            )}
+            selectInput={{
+              onChange: e => setPipelineAttributes(prev => ({
+                ...prev,
+                concurrency_config: {
+                  ...prev?.concurrency_config,
+                    on_pipeline_run_limit_reached: e.target.value,
+                },
+              })),
+              options: Object.values(ConcurrencyConfigRunLimitReachedActionEnum)?.map(key => ({
+                label: capitalize(key),
+                value: key,
+              })),
+              placeholder: 'Select an option',
+              value: pipelineAttributes?.concurrency_config?.on_pipeline_run_limit_reached || '',
+            }}
+            title="How to handle new pipeline runs when limit reached"
+          />
+        </SetupSection>
       </Spacing>
 
       <Spacing mt={UNITS_BETWEEN_SECTIONS}>
@@ -386,10 +544,13 @@ function PipelineSettings({
             loading={isPipelineUpdating}
             // @ts-ignore
             onClick={() => updatePipeline({
+              concurrency_config: pipelineAttributes?.concurrency_config,
+              description: pipelineAttributes?.description,
               executor_type: pipelineAttributes?.executor_type,
               name: pipelineAttributes?.name,
               retry_config: pipelineAttributes?.retry_config,
               run_pipeline_in_one_process: pipelineAttributes?.run_pipeline_in_one_process,
+              settings: pipelineAttributes?.settings,
               tags: pipelineAttributes?.tags,
               // @ts-ignore
             }).then(() => setPipelineAttributesTouched(false))}

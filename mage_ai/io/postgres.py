@@ -99,6 +99,8 @@ class Postgres(BaseSQL):
             password = self.settings['password']
             port = self.settings['port']
             user = self.settings['user']
+            keepalives = self.settings.get('keepalives', 1)
+            keepalives_idle = self.settings.get('keepalives_idle', 300)
             if self.settings['connection_method'] == 'ssh_tunnel':
                 ssh_setting = dict(ssh_username=self.settings['ssh_username'])
                 if self.settings['ssh_pkey'] is not None:
@@ -128,18 +130,34 @@ class Postgres(BaseSQL):
                 host = '127.0.0.1'
                 port = self.ssh_tunnel.local_bind_port
 
-            connect_opts = dict(
-                database=database,
-                host=host,
-                password=password,
-                port=port,
-                user=user,
-                keepalives=1,
-                keepalives_idle=300,
-            )
+            connect_opts = self.settings.copy()
+            # See recognized keyword parameters for psycopg2.connect()
+            # https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-PARAMKEYWORDS
+            unrecognized_keys = [
+                'dbname',
+                'schema',
+                'connection_method',
+                'ssh_host',
+                'ssh_port',
+                'ssh_username',
+                'ssh_password',
+                'ssh_pkey',
+                "verbose"
+            ]
+            for key in unrecognized_keys:
+                connect_opts.pop(key, None)
 
-            if self.settings.get('connect_timeout'):
-                connect_opts['connect_timeout'] = self.settings['connect_timeout']
+            connect_opts.update(
+                {
+                    'database': database,
+                    'host': host,
+                    'password': password,
+                    'port': port,
+                    'user': user,
+                    'keepalives': keepalives,
+                    'keepalives_idle': keepalives_idle,
+                }
+            )
 
             try:
                 self._ctx = connect(**connect_opts)
@@ -162,8 +180,28 @@ class Postgres(BaseSQL):
         if self.verbose and self.printer.exists_previous_message:
             print('')
 
+    def build_create_schema_command(
+        self,
+        schema_name: str
+    ) -> str:
+        clean_schema_name = schema_name.strip('"')
+        return f"""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT schema_name
+                FROM information_schema.schemata
+                WHERE schema_name = '{clean_schema_name}'
+            ) THEN
+                EXECUTE 'CREATE SCHEMA {schema_name}';
+            END IF;
+        END
+        $$;
+        """
+
     def table_exists(self, schema_name: str, table_name: str) -> bool:
         with self.conn.cursor() as cur:
+            table_name = table_name.replace('"', '')
             cur.execute(
                 f'SELECT * FROM pg_tables WHERE schemaname = \'{schema_name}\' AND '
                 f'tablename = \'{table_name}\''
@@ -257,6 +295,14 @@ class Postgres(BaseSQL):
 
         return 'text'
 
+    @staticmethod
+    def _clean_array_value(val: str) -> str:
+        if val is None or type(val) is not str or len(val) < 2:
+            return val
+        if val[0] == '[' and val[-1] == ']':
+            return str(val).replace('[', '{').replace(']', '}')
+        return val
+
     def upload_dataframe(
         self,
         cursor: _psycopg.cursor,
@@ -264,8 +310,10 @@ class Postgres(BaseSQL):
         db_dtypes: List[str],
         dtypes: List[str],
         full_table_name: str,
-        buffer: Union[IO, None] = None,
         allow_reserved_words: bool = False,
+        auto_clean_name: bool = True,
+        buffer: Union[IO, None] = None,
+        case_sensitive: bool = False,
         unique_conflict_method: str = None,
         unique_constraints: List[str] = None,
         **kwargs,
@@ -275,13 +323,6 @@ class Postgres(BaseSQL):
         else:
             # Use COPY command
             use_insert_command = False
-
-        def clean_array_value(val):
-            if val is None or type(val) is not str or len(val) < 2:
-                return val
-            if val[0] == '[' and val[-1] == ']':
-                return '{' + val[1:-1] + '}'
-            return val
 
         def serialize_obj(val):
             if type(val) is dict or type(val) is np.ndarray:
@@ -297,7 +338,7 @@ class Postgres(BaseSQL):
                     ignore_nan=True,
                 )
             elif not use_insert_command and type(val) is list:
-                return clean_array_value(simplejson.dumps(
+                return self._clean_array_value(simplejson.dumps(
                     val,
                     default=encode_complex,
                     ignore_nan=True,
@@ -330,16 +371,29 @@ class Postgres(BaseSQL):
                 f'VALUES ({values_placeholder})',
             ]
 
-            unique_constraints = \
-                [f'"{self._clean_column_name(col, allow_reserved_words=allow_reserved_words)}"'
-                 for col in unique_constraints]
-            columns_cleaned = \
-                [f'"{self._clean_column_name(col, allow_reserved_words=allow_reserved_words)}"'
-                 for col in columns]
+            cleaned_unique_constraints = []
+            for col in unique_constraints:
+                cleaned_col = self._clean_column_name(
+                    col,
+                    allow_reserved_words=allow_reserved_words,
+                    auto_clean_name=auto_clean_name,
+                    case_sensitive=case_sensitive,
+                )
+                cleaned_unique_constraints.append(f'"{cleaned_col}"')
 
-            commands.append(f"ON CONFLICT ({', '.join(unique_constraints)})")
+            cleaned_columns = []
+            for col in columns:
+                cleaned_col = self._clean_column_name(
+                    col,
+                    allow_reserved_words=allow_reserved_words,
+                    auto_clean_name=auto_clean_name,
+                    case_sensitive=case_sensitive,
+                )
+                cleaned_columns.append(f'"{cleaned_col}"')
+
+            commands.append(f"ON CONFLICT ({', '.join(cleaned_unique_constraints)})")
             if UNIQUE_CONFLICT_METHOD_UPDATE == unique_conflict_method:
-                update_command = [f'{col} = EXCLUDED.{col}' for col in columns_cleaned]
+                update_command = [f'{col} = EXCLUDED.{col}' for col in cleaned_columns]
                 commands.append(
                     f"DO UPDATE SET {', '.join(update_command)}",
                 )
@@ -363,3 +417,16 @@ COPY {full_table_name} ({insert_columns}) FROM STDIN (
     , FORCE_NULL({insert_columns})
 );
         """, buffer)
+
+    def execute(self, query_string: str, **query_vars) -> None:
+        """
+        Sends query to the connected database.
+
+        Args:
+            query_string (str): SQL query string to apply on the connected database.
+            query_vars: Variable values to fill in when using format strings in query.
+        """
+        with self.printer.print_msg(f'Executing query \'{query_string}\''):
+            query_string = self._clean_query(query_string)
+            with self.conn.cursor() as cur:
+                cur.execute(query_string, query_vars)

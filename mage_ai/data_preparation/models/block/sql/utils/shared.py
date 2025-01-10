@@ -1,6 +1,6 @@
 import re
 from os import path
-from typing import Callable, Dict, List, Tuple, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 from jinja2 import StrictUndefined, Template
 from pandas import DataFrame
@@ -10,9 +10,12 @@ from mage_ai.data_preparation.models.block.sql.constants import (
     CONFIG_KEY_UPSTREAM_BLOCK_CONFIGURATION_TABLE_NAME,
 )
 from mage_ai.data_preparation.models.constants import BlockLanguage, BlockType
+from mage_ai.data_preparation.shared.utils import get_template_vars
+from mage_ai.data_preparation.templates.utils import get_variable_for_template
 from mage_ai.data_preparation.variable_manager import get_variable
 from mage_ai.io.config import ConfigFileLoader
 from mage_ai.settings.repo import get_repo_path
+from mage_ai.shared.hash import merge_dict
 
 MAGE_SEMI_COLON = '__MAGE_SEMI_COLON__'
 
@@ -225,10 +228,36 @@ def interpolate_input(
     return query
 
 
-def interpolate_vars(query, global_vars=None):
+def interpolate_vars(
+    content: str,
+    global_vars: Dict = None,
+    block=None,
+    dynamic_block_index: int = None
+) -> str :
+    if not content:
+        return content
     if global_vars is None:
         global_vars = dict()
-    return Template(query, undefined=StrictUndefined).render(**global_vars)
+
+    if block:
+        content = block.interpolate_content(
+            content, variables=global_vars, dynamic_block_index=dynamic_block_index,
+        )
+
+    return Template(
+        content,
+        undefined=StrictUndefined,
+    ).render(
+        variables=lambda x, p=None, v=global_vars: get_variable_for_template(
+            x,
+            parse=p,
+            variables=v,
+        ),
+        **merge_dict(
+            global_vars,
+            get_template_vars(),
+        ),
+    )
 
 
 def table_name_parts(
@@ -353,8 +382,8 @@ def create_upstream_block_tables(
 
     input_vars, kwargs_vars, upstream_block_uuids = block.fetch_input_variables(
         None,
-        execution_partition,
-        None,
+        execution_partition=execution_partition,
+        global_vars=None,
         dynamic_block_index=dynamic_block_index,
         dynamic_upstream_block_uuids=dynamic_upstream_block_uuids,
     )
@@ -460,7 +489,7 @@ def remove_comments(text: str) -> str:
     return '\n'.join(line for line in lines if not line.startswith('--'))
 
 
-def extract_create_statement_table_name(text: str) -> str:
+def extract_create_statement_table_name(text: str) -> Optional[str]:
     create_table_pattern = r'create table(?: if not exists)*'
 
     statement_partial, _ = extract_and_replace_text_between_strings(
@@ -485,7 +514,7 @@ def extract_create_statement_table_name(text: str) -> str:
 
 def extract_insert_statement_table_names(text: str) -> List[str]:
     matches = re.findall(
-        r'insert(?: overwrite)*(?: into)*[\s]+([\w.]+)',
+        r'insert(?:\s+ignore)?(?:\s+overwrite)?(?:\s+into)?[\s]+([\w.]+)',
         remove_comments(text),
         re.IGNORECASE,
     )
@@ -508,6 +537,24 @@ def extract_update_statement_table_names(text: str) -> List[str]:
         re.IGNORECASE,
     )
     return matches
+
+
+def extract_full_table_name(text: str) -> Optional[str]:
+    if not text:
+        return None
+
+    table_name = extract_create_statement_table_name(text)
+    if table_name:
+        return table_name
+
+    matches = extract_insert_statement_table_names(text)
+    if len(matches) == 0:
+        matches = extract_update_statement_table_names(text)
+
+    if len(matches) == 0:
+        return None
+
+    return matches[len(matches) - 1]
 
 
 def has_create_or_insert_statement(text: str) -> bool:

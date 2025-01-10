@@ -4,6 +4,10 @@ from time import sleep
 from typing import Any, Dict, List
 
 from mage_ai.data_preparation.models.block import Block
+from mage_ai.data_preparation.models.block.dynamic.utils import (
+    is_dynamic_block,
+    is_dynamic_block_child,
+)
 from mage_ai.data_preparation.models.block.sql import (
     bigquery,
     clickhouse,
@@ -17,6 +21,7 @@ from mage_ai.data_preparation.models.block.sql import (
     trino,
 )
 from mage_ai.data_preparation.models.block.sql.utils.shared import (
+    extract_full_table_name,
     has_create_or_insert_statement,
     has_drop_statement,
     has_update_statement,
@@ -27,7 +32,6 @@ from mage_ai.data_preparation.models.block.sql.utils.shared import (
 from mage_ai.data_preparation.models.constants import BlockType
 from mage_ai.io.base import QUERY_ROW_LIMIT, DataSource, ExportWritePolicy
 from mage_ai.io.config import ConfigFileLoader
-from mage_ai.settings.repo import get_repo_path
 
 PREVIEWABLE_BLOCK_TYPES = [
     BlockType.CUSTOM,
@@ -87,12 +91,18 @@ def execute_sql_code(
         PostgreSQL, Redshift, Snowflake, and Trino, applying relevant configurations and
         returning the query execution results.
     """
+    is_dynamic = is_dynamic_block(block) or is_dynamic_block_child(block)
+
     configuration = configuration if configuration else block.configuration
     use_raw_sql = configuration.get('use_raw_sql')
+    disable_query_preprocessing = configuration.get('disable_query_preprocessing', False) or False
 
     if not config_file_loader:
-        config_path = path.join(get_repo_path(), 'io_config.yaml')
-        config_profile = configuration.get('data_provider_profile')
+        config_path = path.join(block.repo_path, 'io_config.yaml')
+        config_profile = interpolate_vars(
+            configuration.get('data_provider_profile'),
+            global_vars=global_vars,
+        )
         config_file_loader = ConfigFileLoader(config_path, config_profile)
 
     data_provider = configuration.get('data_provider')
@@ -137,13 +147,19 @@ def execute_sql_code(
         verbose=BlockType.DATA_EXPORTER == block.type,
     )
 
+    interpolate_vars_options = dict(
+        block=block,
+        dynamic_block_index=dynamic_block_index,
+        global_vars=global_vars,
+    )
+
     if DataSource.BIGQUERY.value == data_provider:
         from mage_ai.io.bigquery import BigQuery
 
         loader = BigQuery.with_config(config_file_loader)
         database = database or loader.default_database()
 
-        bigquery.create_upstream_block_tables(
+        not is_dynamic and bigquery.create_upstream_block_tables(
             loader,
             block,
             **create_upstream_block_tables_kwargs,
@@ -155,13 +171,14 @@ def execute_sql_code(
             loader,
             **interpolate_input_data_kwargs,
         )
-        query_string = interpolate_vars(query_string, global_vars=global_vars)
+        query_string = interpolate_vars(query_string, **interpolate_vars_options)
 
         if use_raw_sql:
             return execute_raw_sql(
                 loader,
                 block,
                 query_string,
+                disable_query_preprocessing=disable_query_preprocessing,
                 configuration=configuration,
                 should_query=should_query,
             )
@@ -200,7 +217,7 @@ def execute_sql_code(
         from mage_ai.io.clickhouse import ClickHouse
 
         loader = ClickHouse.with_config(config_file_loader)
-        clickhouse.create_upstream_block_tables(
+        not is_dynamic and clickhouse.create_upstream_block_tables(
             loader,
             block,
             **create_upstream_block_tables_kwargs,
@@ -211,8 +228,7 @@ def execute_sql_code(
             query,
             **interpolate_input_data_kwargs,
         )
-        query_string = interpolate_vars(
-            query_string, global_vars=global_vars)
+        query_string = interpolate_vars(query_string, **interpolate_vars_options)
 
         database = database or loader.default_database()
 
@@ -221,6 +237,7 @@ def execute_sql_code(
                 loader,
                 block,
                 query_string,
+                disable_query_preprocessing=disable_query_preprocessing,
                 configuration=configuration,
                 should_query=should_query,
             )
@@ -244,7 +261,7 @@ def execute_sql_code(
         from mage_ai.io.druid import Druid
 
         with Druid.with_config(config_file_loader) as loader:
-            druid.create_upstream_block_tables(
+            not is_dynamic and druid.create_upstream_block_tables(
                 loader,
                 block,
                 **create_upstream_block_tables_kwargs,
@@ -255,13 +272,14 @@ def execute_sql_code(
                 query,
                 **interpolate_input_data_kwargs,
             )
-            query_string = interpolate_vars(query_string, global_vars=global_vars)
+            query_string = interpolate_vars(query_string, **interpolate_vars_options)
 
             if use_raw_sql:
                 return execute_raw_sql(
                     loader,
                     block,
                     query_string,
+                    disable_query_preprocessing=disable_query_preprocessing,
                     configuration=configuration,
                     should_query=should_query,
                 )
@@ -287,7 +305,7 @@ def execute_sql_code(
 
         loader = DuckDB.with_config(config_file_loader)
         schema = schema or loader.default_schema()
-        duckdb.create_upstream_block_tables(
+        not is_dynamic and duckdb.create_upstream_block_tables(
             loader,
             block,
             **create_upstream_block_tables_kwargs,
@@ -299,14 +317,14 @@ def execute_sql_code(
             **interpolate_input_data_kwargs,
         )
 
-        query_string = interpolate_vars(
-            query_string, global_vars=global_vars)
+        query_string = interpolate_vars(query_string, **interpolate_vars_options)
 
         if use_raw_sql:
             return execute_raw_sql(
                 loader,
                 block,
                 query_string,
+                disable_query_preprocessing=disable_query_preprocessing,
                 configuration=configuration,
                 should_query=should_query,
             )
@@ -322,7 +340,7 @@ def execute_sql_code(
             if should_query:
                 return [
                     loader.load(
-                        f'SELECT * FROM {table_name}',
+                        f'SELECT * FROM {schema}.{table_name}',
                         verbose=False,
                     ),
                 ]
@@ -330,7 +348,7 @@ def execute_sql_code(
         from mage_ai.io.mssql import MSSQL
 
         with MSSQL.with_config(config_file_loader) as loader:
-            mssql.create_upstream_block_tables(
+            not is_dynamic and mssql.create_upstream_block_tables(
                 loader,
                 block,
                 **create_upstream_block_tables_kwargs,
@@ -343,7 +361,7 @@ def execute_sql_code(
             )
 
             schema = schema or loader.default_schema()
-            query_string = interpolate_vars(query_string, global_vars=global_vars)
+            query_string = interpolate_vars(query_string, **interpolate_vars_options)
 
             if use_raw_sql:
                 return mssql.execute_raw_sql(
@@ -390,13 +408,14 @@ def execute_sql_code(
                 query,
                 **interpolate_input_data_kwargs,
             )
-            query_string = interpolate_vars(query_string, global_vars=global_vars)
+            query_string = interpolate_vars(query_string, **interpolate_vars_options)
 
             if use_raw_sql:
                 return execute_raw_sql(
                     loader,
                     block,
                     query_string,
+                    disable_query_preprocessing=disable_query_preprocessing,
                     configuration=configuration,
                     should_query=should_query,
                 )
@@ -421,7 +440,7 @@ def execute_sql_code(
         from mage_ai.io.postgres import Postgres
 
         with Postgres.with_config(config_file_loader) as loader:
-            postgres.create_upstream_block_tables(
+            not is_dynamic and postgres.create_upstream_block_tables(
                 loader,
                 block,
                 **create_upstream_block_tables_kwargs,
@@ -433,7 +452,7 @@ def execute_sql_code(
                 loader,
                 **interpolate_input_data_kwargs,
             )
-            query_string = interpolate_vars(query_string, global_vars=global_vars)
+            query_string = interpolate_vars(query_string, **interpolate_vars_options)
 
             schema = schema or loader.default_schema()
 
@@ -442,6 +461,7 @@ def execute_sql_code(
                     loader,
                     block,
                     query_string,
+                    disable_query_preprocessing=disable_query_preprocessing,
                     configuration=configuration,
                     should_query=should_query,
                 )
@@ -466,7 +486,7 @@ def execute_sql_code(
         from mage_ai.io.redshift import Redshift
 
         with Redshift.with_config(config_file_loader) as loader:
-            redshift.create_upstream_block_tables(
+            not is_dynamic and redshift.create_upstream_block_tables(
                 loader,
                 block,
                 **create_upstream_block_tables_kwargs,
@@ -481,13 +501,14 @@ def execute_sql_code(
                 loader,
                 **interpolate_input_data_kwargs,
             )
-            query_string = interpolate_vars(query_string, global_vars=global_vars)
+            query_string = interpolate_vars(query_string, **interpolate_vars_options)
 
             if use_raw_sql:
                 return execute_raw_sql(
                     loader,
                     block,
                     query_string,
+                    disable_query_preprocessing=disable_query_preprocessing,
                     configuration=configuration,
                     should_query=should_query,
                 )
@@ -527,7 +548,7 @@ def execute_sql_code(
             schema = schema or loader.default_schema()
             schema = schema.upper() if schema else schema
 
-            snowflake.create_upstream_block_tables(
+            not is_dynamic and snowflake.create_upstream_block_tables(
                 loader,
                 block,
                 **create_upstream_block_tables_kwargs,
@@ -539,13 +560,14 @@ def execute_sql_code(
                 loader,
                 **interpolate_input_data_kwargs,
             )
-            query_string = interpolate_vars(query_string, global_vars=global_vars)
+            query_string = interpolate_vars(query_string, **interpolate_vars_options)
 
             if use_raw_sql:
                 return execute_raw_sql(
                     loader,
                     block,
                     query_string,
+                    disable_query_preprocessing=disable_query_preprocessing,
                     configuration=configuration,
                     should_query=should_query,
                 )
@@ -582,7 +604,7 @@ def execute_sql_code(
             database = database or loader.default_database()
             schema = schema or loader.default_schema()
 
-            trino.create_upstream_block_tables(
+            not is_dynamic and trino.create_upstream_block_tables(
                 loader,
                 block,
                 unique_table_name_suffix=unique_table_name_suffix,
@@ -596,13 +618,14 @@ def execute_sql_code(
                 unique_table_name_suffix=unique_table_name_suffix,
                 **interpolate_input_data_kwargs,
             )
-            query_string = interpolate_vars(query_string, global_vars=global_vars)
+            query_string = interpolate_vars(query_string, **interpolate_vars_options)
 
             if use_raw_sql:
                 return execute_raw_sql(
                     loader,
                     block,
                     query_string,
+                    disable_query_preprocessing=disable_query_preprocessing,
                     configuration=configuration,
                     should_query=should_query,
                 )
@@ -640,9 +663,40 @@ def execute_raw_sql(
     query_string: str,
     configuration: Dict = None,
     should_query: bool = False,
+    disable_query_preprocessing: bool = False,
 ) -> List[Any]:
+    """
+    Execute raw SQL queries with optional preprocessing and post-processing.
+
+    Args:
+        loader (Loader): The loader object responsible for executing queries.
+        block (Block): The SQL block object.
+        query_string (str): The SQL query string to execute.
+        configuration (Dict, optional): Additional configuration parameters for the query execution.
+            Defaults to None.
+        should_query (bool, optional): Flag indicating whether to perform query execution.
+            Defaults to False.
+        disable_query_preprocessing (bool, optional): Flag indicating whether to disable query
+            preprocessing. Defaults to False.
+
+    Returns:
+        List[Any]: A list containing the query results or an empty list if no results are expected.
+
+    Note:
+        This method preprocesses the query string, executes the queries, and performs
+        post-processing as needed. If `should_query` is False, it only preprocesses the query
+        without executing it.
+
+    """
     if configuration is None:
         configuration = {}
+
+    if disable_query_preprocessing:
+        return loader.execute_query_raw(
+            query_string,
+            configuration=configuration,
+        )
+
     queries = []
     fetch_query_at_indexes = []
 
@@ -658,17 +712,18 @@ def execute_raw_sql(
             queries.append(query)
             fetch_query_at_indexes.append(True)
 
-    if should_query and (has_create_or_insert or has_update) and block.full_table_name:
-        queries.append(f'SELECT * FROM {block.full_table_name} LIMIT 1000')
-        fetch_query_at_indexes.append(block.full_table_name)
-
-    results = loader.execute_queries(
-        queries,
-        commit=True,
-        fetch_query_at_indexes=fetch_query_at_indexes,
-    )
+    if should_query and (has_create_or_insert or has_update):
+        full_table_name = extract_full_table_name(query_string)
+        if full_table_name:
+            queries.append(f'SELECT * FROM {full_table_name} LIMIT 1000')
+            fetch_query_at_indexes.append(full_table_name)
 
     if should_query:
+        results = loader.execute_queries(
+            queries,
+            commit=True,
+            fetch_query_at_indexes=fetch_query_at_indexes,
+        )
         return [results[-1]]
 
     return []

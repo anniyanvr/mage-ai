@@ -38,6 +38,12 @@ class DictLogger():
     def warning(self, message, **kwargs):
         self.__send_message('warning', message, **kwargs)
 
+    def warn(self, message, **kwargs):
+        """
+        Same as warning, but in some cases we may need to use warn instead of warning
+        """
+        self.__send_message('warning', message, **kwargs)
+
     def __send_message(
         self,
         method_name,
@@ -55,9 +61,9 @@ class DictLogger():
         )
 
         if error:
-            data['error'] = traceback.format_exc(),
-            data['error_stack'] = traceback.format_stack(),
-            data['error_stacktrace'] = str(error),
+            data['error'] = traceback.format_exc()
+            data['error_stack'] = traceback.format_stack()
+            data['error_stacktrace'] = str(error)
 
         msg = simplejson.dumps(
             merge_dict(self.logging_tags or dict(), merge_dict(kwargs, data)),
@@ -80,6 +86,7 @@ class DictLogger():
             'info',
             'log',
             'warning',
+            'warn',
         ]:
             return getattr(self.logger, method_name)
         return getattr(self, method_name)

@@ -46,7 +46,7 @@ class TargetMongoDb(Target):
 
         return logger
 
-    def listen_override(self, file_input: t.IO[str] | None = None) -> None:
+    def listen_override(self, file_input: t.Optional[str] = None) -> None:
         if not file_input:
             file_input = sys.stdin
 
@@ -91,29 +91,32 @@ class TargetMongoDb(Target):
         """
         stats: dict[str, int] = defaultdict(int)
         for line in file_input.readlines():
-
-            if line.startswith('INFO'):
+            row = None
+            try:
+                row = json.loads(line)
+            except json.decoder.JSONDecodeError:
+                self.logger.info(f'Unable to parse: {line}')
                 continue
 
-            line_dict = json.loads(line)
+            if not row:
+                self.logger.info(f'No valid row data {row} for line: {line}')
+                continue
 
-            self._assert_line_requires(line_dict, requires={"type"})
-
-            record_type: SingerMessageType = line_dict["type"]
+            record_type: SingerMessageType = row.get('type')
             if record_type == SingerMessageType.SCHEMA:
-                self._process_schema_message(line_dict)
+                self._process_schema_message(row)
 
             elif record_type == SingerMessageType.RECORD:
-                self._process_record_message_mongo(line_dict)
+                self._process_record_message_mongo(row)
 
             elif record_type == SingerMessageType.ACTIVATE_VERSION:
-                self._process_activate_version_message(line_dict)
+                self._process_activate_version_message(row)
 
             elif record_type == SingerMessageType.STATE:
-                self._process_state_message(line_dict)
+                self._process_state_message(row)
 
             elif record_type == SingerMessageType.BATCH:
-                self._process_batch_message(line_dict)
+                self._process_batch_message(row)
 
             else:
                 continue

@@ -17,14 +17,13 @@ import {
   KEY_CODE_ENTER,
   KEY_SYMBOL_ENTER,
 } from '@utils/hooks/keyboardShortcuts/constants';
-import { PADDING_HORIZONTAL_UNITS, UNIT } from '@oracle/styles/units/spacing';
+import { OAUTH_PROVIDER_SIGN_IN_MAPPING } from '@interfaces/OauthType';
+import { PADDING_HORIZONTAL_UNITS } from '@oracle/styles/units/spacing';
 import { ignoreKeys } from '@utils/hash';
 import { onSuccess } from '@api/utils/response';
 import { onlyKeysPresent } from '@utils/hooks/keyboardShortcuts/utils';
 import { queryFromUrl, queryString } from '@utils/url';
 import { setUser } from '@utils/session';
-import { MicrosoftIcon } from '@oracle/icons';
-import { OauthProviderEnum } from '@interfaces/OauthType';
 
 const KEY_EMAIL = 'email';
 const KEY_PASSWORD = 'password';
@@ -57,24 +56,32 @@ function SignForm({
               user,
             },
           }) => {
-            setUser(user);
-            AuthToken.storeToken(token, () => {
-              let url: string = '/';
-              const query = queryFromUrl(window.location.href);
+            const basePath = router?.basePath;
+            setUser(user, basePath);
+            AuthToken.storeToken(
+              token,
+              () => {
+                let url: string = `${basePath}/`;
+                const query = queryFromUrl(window.location.href);
 
-              if (typeof window !== 'undefined' && query.redirect_url) {
-                const qs = queryString(
-                  ignoreKeys(
-                    query,
-                    ['redirect_url', 'access_token', 'provider'],
-                  ),
-                );
-                url = `${query.redirect_url}?${qs}`;
-                window.location.href = url;
-              } else {
-                router.push(url);
-              }
-            });
+                if (typeof window !== 'undefined') {
+                  const qs = queryString(
+                    ignoreKeys(
+                      query,
+                      ['redirect_url', 'access_token', 'provider'],
+                    ),
+                  );
+                  if (query.redirect_url) {
+                    url = `${query.redirect_url}?${qs}`;
+                  }
+
+                  window.location.href = url;
+                } else {
+                  router.push(url);
+                }
+              },
+              basePath,
+            );
           },
           onErrorCallback: ({ error }) => {
             setError(error);
@@ -84,14 +91,24 @@ function SignForm({
     },
   );
 
-  const create = useCallback(payload => AuthToken.logout(() => createRequest(payload)), [
-    createRequest,
-  ]);
+  const create = useCallback(payload => AuthToken.logout(
+    () => createRequest(payload),
+    router?.basePath,
+  ), [createRequest, router?.basePath]);
 
-  const { data: dataOauthAD } = api.oauths.detail(OauthProviderEnum.ACTIVE_DIRECTORY, {
+  const { data: dataOauths } = api.oauths.list({
     redirect_uri: typeof window !== 'undefined' ? encodeURIComponent(window.location.href) : '',
   });
-  const adOauthUrl = useMemo(() => dataOauthAD?.oauth?.url, [dataOauthAD]);
+
+  const providerMapping = useMemo(() => dataOauths?.oauths?.reduce(
+    (acc, curr) => {
+      acc[curr.provider] = curr;
+      return acc;
+    },
+    {},
+  ), [
+    dataOauths,
+  ]);
 
   const { 
     access_token: accessTokenFromURL,
@@ -206,20 +223,18 @@ function SignForm({
                     Sign into Mage
                   </KeyboardShortcutButton>
                 </Spacing>
-                
-                {adOauthUrl && (
-                  <Spacing mt={4}>
-                    <KeyboardShortcutButton
-                      beforeElement={<MicrosoftIcon size={UNIT * 2} />}
-                      bold
-                      inline
-                      onClick={() => AuthToken.logout(() => router.push(adOauthUrl))}
-                      uuid="SignForm/active_directory"
-                    >
-                      Sign in with Microsoft
-                    </KeyboardShortcutButton>
-                  </Spacing>
-                )}
+
+                {Object.entries(OAUTH_PROVIDER_SIGN_IN_MAPPING).map(([provider, SignInComponent]) => (
+                  <>
+                    {providerMapping?.[provider] && (
+                      <Spacing mt={4}>
+                        <SignInComponent
+                          oauthResponse={providerMapping?.[provider]}
+                        />
+                      </Spacing>
+                    )}
+                  </>
+                ))}
               </form>
             </ContainerStyle>
           </Spacing>
@@ -239,7 +254,7 @@ function SignForm({
           px={PADDING_HORIZONTAL_UNITS}
           py={PADDING_HORIZONTAL_UNITS + 8}
         >
-          <BackgroundImageStyle src={`${router.basePath}/images/sessions/abstract.png`}>
+          <BackgroundImageStyle src={`${router?.basePath}/images/sessions/abstract.png`}>
             Sign in abstract image
           </BackgroundImageStyle>
         </Spacing>

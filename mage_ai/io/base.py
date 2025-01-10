@@ -1,47 +1,75 @@
 import os
-import re
 from abc import ABC, abstractmethod
-from enum import Enum
-from typing import IO, Any, Callable, Union
+from typing import IO, Any, Callable, Dict, Union
 
 import pandas as pd
+import polars as pl
 from pandas import DataFrame
 
 from mage_ai.io.constants import SQL_RESERVED_WORDS
+from mage_ai.shared.enum import StrEnum
 from mage_ai.shared.logger import VerbosePrintHandler
+from mage_ai.shared.models import BaseEnum
+from mage_ai.shared.utils import clean_name
 
 QUERY_ROW_LIMIT = 10_000_000
 
 
-class DataSource(str, Enum):
+class DataSource(StrEnum):
+    ALGOLIA = 'algolia'
     API = 'api'
     BIGQUERY = 'bigquery'
+    CHROMA = 'chroma'
     CLICKHOUSE = 'clickhouse'
     DRUID = 'druid'
     DUCKDB = 'duckdb'
     FILE = 'file'
     GOOGLE_CLOUD_STORAGE = 'google_cloud_storage'
+    GOOGLE_SHEETS = 'google_sheets'
     KAFKA = 'kafka'
     MYSQL = 'mysql'
     MSSQL = 'sqlserver'
     OPENSEARCH = 'opensearch'
+    PINOT = 'pinot'
     POSTGRES = 'postgres'
+    QDRANT = 'qdrant'
     REDSHIFT = 'redshift'
     S3 = 's3'
     SNOWFLAKE = 'snowflake'
     SPARK = 'spark'
     TRINO = 'trino'
+    WEAVIATE = 'weaviate'
 
 
-class FileFormat(str, Enum):
+class FileFormat(StrEnum):
     CSV = 'csv'
     JSON = 'json'
     PARQUET = 'parquet'
     HDF5 = 'hdf5'
     XML = 'xml'
+    EXCEL = 'excel'
+
+    @classmethod
+    def from_extension(cls, ext: str):
+        if ext == 'csv':
+            return cls.CSV
+        elif ext == 'json':
+            return cls.JSON
+        elif ext == 'parquet':
+            return cls.PARQUET
+        elif ext == 'hdf5':
+            return cls.HDF5
+        elif ext == 'xml':
+            return cls.XML
+        elif ext in ('xls', 'xlsx'):
+            return cls.EXCEL
+        else:
+            raise ValueError(
+                f'None file format found for this file extension: {ext}'
+            )
 
 
-class ExportWritePolicy(str, Enum):
+class ExportWritePolicy(BaseEnum):
     APPEND = 'append'
     FAIL = 'fail'
     REPLACE = 'replace'
@@ -118,7 +146,9 @@ class BaseFile(BaseIO):
         pass
 
     def _get_file_format(self, filepath: Union[os.PathLike, str]) -> str:
-        return os.path.splitext(os.path.basename(filepath))[-1][1:]
+        return FileFormat.from_extension(
+            os.path.splitext(os.path.basename(filepath))[-1][1:]
+        )
 
     def __get_reader(self, format: Union[FileFormat, str, None]) -> Callable:
         """
@@ -143,8 +173,10 @@ class BaseFile(BaseIO):
             return pd.read_hdf
         elif format == FileFormat.XML:
             return pd.read_xml
+        elif format == FileFormat.EXCEL:
+            return pd.read_excel
         else:
-            raise ValueError(f'Invalid format \'{format}\' specified.')
+            raise ValueError(f"Invalid format '{format}' specified.")
 
     def _read(
         self,
@@ -183,7 +215,7 @@ class BaseFile(BaseIO):
 
     def _write(
         self,
-        df: DataFrame,
+        df,
         format: Union[FileFormat, str, None],
         output: Union[IO, os.PathLike, str],
         **kwargs,
@@ -203,17 +235,23 @@ class BaseFile(BaseIO):
             format (Union[FileFormat, str]): Format to write the data frame as.
             output (Union[IO, os.PathLike]): Output stream/filepath to write data frame to.
         """
+        if format is None:
+            format = FileFormat.PARQUET
         writer = self.__get_writer(df, format)
         if format == FileFormat.HDF5:
             if isinstance(output, IO):
                 raise ValueError('Cannot write HDF5 file to buffer of any type.')
             name = os.path.splitext(os.path.basename(output))[0]
             kwargs.setdefault('key', name)
+        elif format == FileFormat.PARQUET and isinstance(df, DataFrame):
+            if 'coerce_timestamps' not in kwargs:
+                kwargs['coerce_timestamps'] = 'ms'
+                kwargs['allow_truncated_timestamps'] = True
         writer(output, **kwargs)
 
     def __get_writer(
         self,
-        df: DataFrame,
+        df,
         format: Union[FileFormat, str, None],
     ) -> Callable:
         """
@@ -226,15 +264,31 @@ class BaseFile(BaseIO):
         Returns:
             Callable: File writer method
         """
-        if format == FileFormat.CSV:
-            return df.to_csv
-        elif format == FileFormat.JSON:
-            return df.to_json
-        elif format == FileFormat.HDF5:
-            return df.to_hdf
-        elif format == FileFormat.XML:
-            return df.to_xml
-        return df.to_parquet
+        if isinstance(df, pl.DataFrame):  # polars DataFrame
+            if format == FileFormat.CSV:
+                return df.write_csv
+            elif format == FileFormat.JSON:
+                return df.write_json
+            elif format == FileFormat.HDF5:
+                return df.write_hdf5
+            elif format == FileFormat.XML:
+                return df.write_xml
+            elif format == FileFormat.EXCEL:
+                return df.write_excel
+            return df.write_parquet
+
+        elif isinstance(df, DataFrame):  # pandas DataFrame
+            if format == FileFormat.CSV:
+                return df.to_csv
+            elif format == FileFormat.JSON:
+                return df.to_json
+            elif format == FileFormat.HDF5:
+                return df.to_hdf
+            elif format == FileFormat.XML:
+                return df.to_xml
+            elif format == FileFormat.EXCEL:
+                return df.to_excel
+            return df.to_parquet
 
     def __del__(self):
         if self.verbose and self.printer.exists_previous_message:
@@ -286,11 +340,22 @@ class BaseSQLDatabase(BaseIO):
         """
         return query_string.strip(' \n\t')
 
-    def _clean_column_name(self, column_name: str, allow_reserved_words: bool = False) -> str:
-        col_new = re.sub(r'\W', '_', column_name.lower())
+    def _clean_column_name(
+        self,
+        column_name: str,
+        allow_reserved_words: bool = False,
+        auto_clean_name: bool = True,
+        case_sensitive: bool = False,
+    ) -> str:
+        if not auto_clean_name:
+            return column_name
+        col_new = clean_name(column_name, case_sensitive=case_sensitive)
         if not allow_reserved_words and col_new.upper() in SQL_RESERVED_WORDS:
             col_new = f'_{col_new}'
         return col_new
+
+    def execute_query_raw(self, query: str, configuration: Dict = None, **kwargs) -> None:
+        pass
 
 
 class BaseSQLConnection(BaseSQLDatabase):

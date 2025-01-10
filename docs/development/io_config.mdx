@@ -1,6 +1,7 @@
 ---
 title: "IO Config"
-sidebarTitle: "IO Config"
+sidebarTitle: "Credentials"
+icon: "key"
 description:
   "The `io_config` YAML file contains the information and credentials required to access
   databases, data warehouses, and data lakes."
@@ -71,6 +72,13 @@ default:
   MYSQL_PASSWORD: password
   MYSQL_PORT: 3306
   MYSQL_USER: root
+  # Pinot
+  PINOT_HOST: hostname
+  PINOT_PASSWORD: password
+  PINOT_PATH: /query/sql
+  PINOT_PORT: 8000
+  PINOT_SCHEME: http
+  PINOT_USER: user
   # PostgreSQL
   POSTGRES_CONNECT_TIMEOUT: 10
   POSTGRES_DBNAME: postgres

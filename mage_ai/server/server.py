@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import json
 import os
 import shutil
 import stat
@@ -12,44 +13,49 @@ from typing import Optional, Union
 import pytz
 import tornado.ioloop
 import tornado.web
+from sqlalchemy import or_
 from tornado import autoreload
 from tornado.ioloop import PeriodicCallback
 from tornado.log import enable_pretty_logging
 from tornado.options import options
+from watchdog.observers import Observer
 
 from mage_ai.authentication.passwords import create_bcrypt_hash, generate_salt
 from mage_ai.cache.block import BlockCache
 from mage_ai.cache.block_action_object import BlockActionObjectCache
+from mage_ai.cache.dbt.cache import DBTCache
+from mage_ai.cache.file import FileCache
+from mage_ai.cache.pipeline import PipelineCache
 from mage_ai.cache.tag import TagCache
 from mage_ai.cluster_manager.constants import ClusterType
 from mage_ai.cluster_manager.manage import check_auto_termination
+from mage_ai.data_preparation.models.project import Project
+from mage_ai.data_preparation.models.project.constants import FeatureUUID
 from mage_ai.data_preparation.preferences import get_preferences
 from mage_ai.data_preparation.repo_manager import (
     ProjectType,
     get_cluster_type,
     get_project_type,
     get_project_uuid,
-    get_variables_dir,
     init_project_uuid,
     init_repo,
+    update_settings_on_metadata_change,
 )
 from mage_ai.data_preparation.shared.constants import MANAGE_ENV_VAR
-from mage_ai.data_preparation.sync import GitConfig
-from mage_ai.data_preparation.sync.git_sync import GitSync
 from mage_ai.orchestration.constants import Entity
-from mage_ai.orchestration.db import db_connection
+from mage_ai.orchestration.db import db_connection, safe_db_query, set_db_schema
 from mage_ai.orchestration.db.database_manager import database_manager
 from mage_ai.orchestration.db.models.oauth import Oauth2Application, Role, User
 from mage_ai.orchestration.utils.distributed_lock import DistributedLock
-from mage_ai.server.active_kernel import switch_active_kernel
 from mage_ai.server.api.base import BaseHandler
 from mage_ai.server.api.blocks import ApiPipelineBlockAnalysisHandler
-from mage_ai.server.api.downloads import ApiDownloadHandler
+from mage_ai.server.api.downloads import ApiDownloadHandler, ApiResourceDownloadHandler
 from mage_ai.server.api.events import (
     ApiEventHandler,
     ApiEventMatcherDetailHandler,
     ApiEventMatcherListHandler,
 )
+from mage_ai.server.api.runs import ApiRunHandler
 from mage_ai.server.api.triggers import ApiTriggerPipelineHandler
 from mage_ai.server.api.v1 import (
     ApiChildDetailHandler,
@@ -60,14 +66,17 @@ from mage_ai.server.api.v1 import (
 )
 from mage_ai.server.constants import DATA_PREP_SERVER_PORT
 from mage_ai.server.docs_server import run_docs_server
+from mage_ai.server.events.stream import EventStreamHandler
+from mage_ai.server.file_observer import MetadataEventHandler
 from mage_ai.server.kernel_output_parser import parse_output_message
-from mage_ai.server.kernels import DEFAULT_KERNEL_NAME
 from mage_ai.server.logger import Logger
 from mage_ai.server.scheduler_manager import (
     SCHEDULER_AUTO_RESTART_INTERVAL,
     check_scheduler_status,
     scheduler_manager,
 )
+from mage_ai.server.setup import initialize_globals
+from mage_ai.server.static.files import StaticFileHandler
 from mage_ai.server.subscriber import get_messages
 from mage_ai.server.terminal_server import (
     MageTermManager,
@@ -76,23 +85,44 @@ from mage_ai.server.terminal_server import (
 )
 from mage_ai.server.websocket_server import WebSocketServer
 from mage_ai.services.redis.redis import init_redis_client
+from mage_ai.services.spark.models.applications import Application
+from mage_ai.services.ssh.aws.emr.utils import file_path as file_path_aws_emr
 from mage_ai.settings import (
     AUTHENTICATION_MODE,
-    LDAP_ADMIN_USERNAME,
+    DEFAULT_OWNER_EMAIL,
+    DEFAULT_OWNER_PASSWORD,
+    DEFAULT_OWNER_USERNAME,
+    DISABLE_AUTO_BROWSER_OPEN,
+    DISABLE_AUTORELOAD,
+    ENABLE_PROMETHEUS,
     OAUTH2_APPLICATION_CLIENT_ID,
+    OTEL_EXPORTER_OTLP_ENDPOINT,
     REDIS_URL,
     REQUESTS_BASE_PATH,
     REQUIRE_USER_AUTHENTICATION,
     REQUIRE_USER_PERMISSIONS,
     ROUTES_BASE_PATH,
+    SERVER_LOGGING_FORMAT,
     SERVER_VERBOSITY,
     SHELL_COMMAND,
     USE_UNIQUE_TERMINAL,
+    get_settings_value,
 )
-from mage_ai.settings.repo import DEFAULT_MAGE_DATA_DIR, get_repo_name, set_repo_path
-from mage_ai.shared.constants import InstanceType
+from mage_ai.settings.keys import LDAP_ADMIN_USERNAME
+from mage_ai.settings.repo import (
+    DEFAULT_MAGE_DATA_DIR,
+    MAGE_CLUSTER_TYPE_ENV_VAR,
+    MAGE_PROJECT_TYPE_ENV_VAR,
+    get_metadata_path,
+    get_repo_name,
+    get_variables_dir,
+    set_repo_path,
+)
+from mage_ai.shared.constants import ENV_VAR_INSTANCE_TYPE, InstanceType
+from mage_ai.shared.environments import is_debug, is_dev
 from mage_ai.shared.io import chmod
-from mage_ai.shared.logger import LoggingLevel
+from mage_ai.shared.logger import LoggingLevel, set_logging_format
+from mage_ai.shared.singletons.memory import get_memory_manager_controller
 from mage_ai.shared.utils import is_port_in_use
 from mage_ai.usage_statistics.logger import UsageStatisticLogger
 
@@ -156,6 +186,14 @@ class ApiSchedulerHandler(BaseHandler):
         self.write(dict(scheduler=dict(status=scheduler_manager.get_status())))
 
 
+class PrometheusMetricsHandler(BaseHandler):
+    def get(self):
+        import prometheus_client
+
+        self.set_header('Content-Type', prometheus_client.CONTENT_TYPE_LATEST)
+        self.write(prometheus_client.generate_latest(prometheus_client.REGISTRY))
+
+
 def replace_base_path(base_path: str) -> str:
     """
     This function will create the BASE_PATH_EXPORTS_FOLDER and replace all the
@@ -187,7 +225,7 @@ def replace_base_path(base_path: str) -> str:
                 with open(filepath, encoding='utf-8') as f:
                     s = f.read()
                 s = s.replace(BASE_PATH_PLACEHOLDER, base_path)
-                s = s.replace('src:url(/fonts', f'src:url(/{base_path}/fonts')
+                s = s.replace("src: url('/fonts", f"src:url('/{base_path}/fonts")
                 s = s.replace('href="/favicon.ico"', f'href="/{base_path}/favicon.ico"')
                 # replace favicon
                 with open(filepath, 'w', encoding='utf-8') as f:
@@ -195,7 +233,11 @@ def replace_base_path(base_path: str) -> str:
     return dst
 
 
-def make_app(template_dir: str = None, update_routes: bool = False):
+def make_app(
+    template_dir: Optional[str] = None,
+    update_routes: bool = False,
+    status_only: bool = False,
+):
     shell_command = SHELL_COMMAND
     if shell_command is None:
         shell_command = 'bash'
@@ -208,7 +250,20 @@ def make_app(template_dir: str = None, update_routes: bool = False):
 
     if template_dir is None:
         template_dir = os.path.join(os.path.dirname(__file__), EXPORTS_FOLDER)
-    routes = [
+
+    routes_base = [
+        # API v1 routes
+        (
+            r'/api/status(?:es)?',
+            ApiListHandler,
+            {
+                'resource': 'statuses',
+                'bypass_oauth_check': True,
+                'is_health_check': True,
+            },
+        ),
+    ]
+    routes_full = routes_base + [
         (r'/?', MainPageHandler),
         (r'/files', MainPageHandler),
         (r'/overview', MainPageHandler),
@@ -225,24 +280,30 @@ def make_app(template_dir: str = None, update_routes: bool = False):
         (r'/manage/(.*)', MainPageHandler),
         (r'/templates', MainPageHandler),
         (r'/version-control', MainPageHandler),
+        (r'/event-streams/(?P<uuid>[\w\-\%2f\.]+)', EventStreamHandler),
         (
             r'/_next/static/(.*)',
-            tornado.web.StaticFileHandler,
+            StaticFileHandler,
             {'path': os.path.join(template_dir, '_next', 'static')},
         ),
         (
             r'/fonts/(.*)',
-            tornado.web.StaticFileHandler,
+            StaticFileHandler,
             {'path': os.path.join(template_dir, 'fonts')},
         ),
         (
             r'/images/(.*)',
-            tornado.web.StaticFileHandler,
+            StaticFileHandler,
             {'path': os.path.join(template_dir, 'images')},
         ),
         (
+            r'/monaco-editor/(.*)',
+            StaticFileHandler,
+            {'path': os.path.join(template_dir, 'monaco-editor')},
+        ),
+        (
             r'/(favicon.ico)',
-            tornado.web.StaticFileHandler,
+            StaticFileHandler,
             {'path': template_dir},
         ),
         (r'/websocket/', WebSocketServer),
@@ -257,7 +318,6 @@ def make_app(template_dir: str = None, update_routes: bool = False):
             r'/api/pipelines/(?P<pipeline_uuid>\w+)/blocks/(?P<block_uuid>[\w\-\%2f\.]+)/analyses',
             ApiPipelineBlockAnalysisHandler,
         ),
-
         # Trigger pipeline via API
         # Original route for backwards compatibility
         (
@@ -268,26 +328,47 @@ def make_app(template_dir: str = None, update_routes: bool = False):
             r'/api/pipeline_schedules/(?P<pipeline_schedule_id>\w+)/api_trigger',
             ApiTriggerPipelineHandler,
         ),
-
+        # Run a single block and get a response immediately
+        (
+            r'/api/runs',
+            ApiRunHandler,
+        ),
+        (
+            r'/api/runs/(?P<token>\w+)',
+            ApiRunHandler,
+        ),
         # Download block output
         (
             r'/api/pipelines/(?P<pipeline_uuid>\w+)/block_outputs/'
             r'(?P<block_uuid>[\w\-\%2f\.(/.*)?]+)/downloads',
             ApiDownloadHandler,
         ),
-
-        # API v1 routes
+        # Download resource
+        (r'/api/downloads/(?P<token>[\w/%.-]+)', ApiResourceDownloadHandler),
+        # Override the APIs that contains file path
+        (r'/api/(?P<resource>file_contents)/(?P<pk>.+)', ApiResourceDetailHandler),
         (
-            r'/api/status(?:es)?',
-            ApiListHandler,
-            {
-                'resource': 'statuses',
-                'bypass_oauth_check': True,
-                'is_health_check': True,
-            },
+            r'/api/(?P<resource>pipelines)/(?P<pk>[\w\-\%2f\.]+)'
+            r'/(?P<child>blocks)/(?P<child_pk>.+)',
+            ApiChildDetailHandler
         ),
         (
-            r'/api/(?P<resource>\w+)/(?P<pk>[\w\-\%2f\.]+)' \
+            r'/api/(?P<resource>files)/(?P<pk>.+)'
+            r'/(?P<child>file_versions)',
+            ApiChildListHandler
+        ),
+        # Override APIs with encoded resource ID
+        (
+            r'/api/(?P<resource>page_block_layouts)/(?P<pk>.+)',
+            ApiResourceDetailHandler,
+        ),
+        (
+            r'/api/(?P<resource>block_outputs)/(?P<pk>.+)',
+            ApiResourceDetailHandler,
+        ),
+        # Generic API patterns
+        (
+            r'/api/(?P<resource>\w+)/(?P<pk>[\w\-\%2f\.]+)'
             r'/(?P<child>\w+)/(?P<child_pk>[\w\-\%2f\.]+)',
             ApiChildDetailHandler,
         ),
@@ -304,25 +385,173 @@ def make_app(template_dir: str = None, update_routes: bool = False):
         (r'/files', MainPageHandler),
         (r'/global-data-products', MainPageHandler),
         (r'/global-data-products/(?P<uuid>\w+)', MainPageHandler),
+        (r'/global-hooks', MainPageHandler),
+        (r'/global-hooks/(?P<uuid>[\w\-\%2f\.]+)', MainPageHandler),
         (r'/templates', MainPageHandler),
-        (r'/templates/(?P<uuid>\w+)', MainPageHandler),
+        (r'/templates/(?P<uuid>[\w\-\%2f\.]+)', MainPageHandler),
         (r'/version-control', MainPageHandler),
     ]
+
+    if status_only:
+        routes = routes_base
+    else:
+        routes = routes_full
+
+    if ENABLE_PROMETHEUS or OTEL_EXPORTER_OTLP_ENDPOINT:
+        from opentelemetry.instrumentation.tornado import TornadoInstrumentor
+
+        TornadoInstrumentor().instrument()
+        logger.info('OpenTelemetry instrumentation enabled.')
+
+    if OTEL_EXPORTER_OTLP_ENDPOINT:
+        logger.info(f'OTEL_EXPORTER_OTLP_ENDPOINT: {OTEL_EXPORTER_OTLP_ENDPOINT}')
+
+        from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+            OTLPSpanExporter,
+        )
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+        service_name = 'mage-ai-server'
+        resource = Resource(
+            attributes={
+                'service.name': service_name,
+            }
+        )
+
+        # Set up a TracerProvider and attach an OTLP exporter to it
+        trace.set_tracer_provider(TracerProvider(resource=resource))
+        tracer_provider = trace.get_tracer_provider()
+
+        # Configure OTLP exporter
+        otlp_exporter = OTLPSpanExporter(
+            # Endpoint of your OpenTelemetry Collector
+            endpoint=OTEL_EXPORTER_OTLP_ENDPOINT,
+            # Use insecure channel if your collector does not support TLS
+            insecure=True,
+        )
+
+        # Attach the OTLP exporter to the TracerProvider
+        span_processor = BatchSpanProcessor(otlp_exporter)
+        tracer_provider.add_span_processor(span_processor)
+
+    if ENABLE_PROMETHEUS:
+        from opentelemetry import metrics
+        from opentelemetry.exporter.prometheus import PrometheusMetricReader
+        from opentelemetry.instrumentation.tornado import TornadoInstrumentor
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+
+        TornadoInstrumentor().instrument()
+        # Service name is required for most backends
+        resource = Resource(attributes={SERVICE_NAME: 'mage'})
+
+        # Initialize PrometheusMetricReader which pulls metrics from the SDK
+        # on-demand to respond to scrape requests
+        reader = PrometheusMetricReader()
+        provider = MeterProvider(resource=resource, metric_readers=[reader])
+        metrics.set_meter_provider(provider)
+        routes += [(r'/metrics', PrometheusMetricsHandler)]
 
     if update_routes:
         updated_routes = []
         for route in routes:
-            updated_routes.append(
-                (route[0].replace('/', f'/{ROUTES_BASE_PATH}/', 1), *route[1:]))
+            updated_routes.append((route[0].replace('/', f'/{ROUTES_BASE_PATH}/', 1), *route[1:]))
     else:
         updated_routes = routes
 
-    autoreload.add_reload_hook(scheduler_manager.stop_scheduler)
+    file_path = file_path_aws_emr()
+    if not os.path.exists(file_path):
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        with open(file_path, 'w') as f:
+            f.write(json.dumps({}))
+
+    if is_dev() and not DISABLE_AUTORELOAD:
+        should_autoreload = True
+        autoreload.add_reload_hook(scheduler_manager.stop_scheduler)
+        autoreload.watch(file_path)
+    else:
+        should_autoreload = False
+
     return tornado.web.Application(
         updated_routes,
-        autoreload=True,
+        autoreload=should_autoreload,
         template_path=template_dir,
     )
+
+
+@safe_db_query
+def initialize_user_authentication(project_type: ProjectType) -> Oauth2Application:
+    logger.info('User authentication is enabled.')
+    # We need to sleep for a few seconds after creating all the tables or else there
+    # may be an error trying to create users.
+    sleep(5)
+
+    # Create new roles on existing users. This should only need to be run once.
+    if project_type == ProjectType.SUB:
+        project_uuid = get_project_uuid()
+        project_uuid_truncated = project_uuid[:8]
+        Role.create_default_roles(
+            entity=Entity.PROJECT,
+            entity_id=project_uuid,
+            name_func=lambda role: f'{role}_{project_uuid_truncated}',
+        )
+        default_owner_role = Role.get_role(f'{Role.DefaultRole.OWNER}_{project_uuid_truncated}')
+    else:
+        Role.create_default_roles()
+        default_owner_role = Role.get_role(Role.DefaultRole.OWNER)
+
+    # Fetch legacy owner user to check if we need to batch update the users with new roles.
+    legacy_owner_user = User.query.filter(User._owner == True).first()  # noqa: E712
+    global_owner_role = Role.get_role(Role.DefaultRole.OWNER)
+    owner_users = global_owner_role.users if global_owner_role else []
+    if not legacy_owner_user and len(owner_users) == 0:
+        logger.info('User with owner permission doesn’t exist, creating owner user.')
+        if AUTHENTICATION_MODE.lower() == 'ldap':
+            username = get_settings_value(LDAP_ADMIN_USERNAME, 'admin')
+            user = User.query.filter(User.username == username).first()
+            if not user:
+                user = User.create(
+                    roles_new=[default_owner_role],
+                    username=get_settings_value(LDAP_ADMIN_USERNAME, 'admin'),
+                )
+        else:
+            password_salt = generate_salt()
+            user = User.query.filter(
+                or_(
+                    User.email == DEFAULT_OWNER_EMAIL,
+                    User.username == DEFAULT_OWNER_USERNAME,
+                ),
+            ).first()
+            if not user:
+                user = User.create(
+                    email=DEFAULT_OWNER_EMAIL,
+                    password_hash=create_bcrypt_hash(DEFAULT_OWNER_PASSWORD, password_salt),
+                    password_salt=password_salt,
+                    roles_new=[default_owner_role],
+                    username=DEFAULT_OWNER_USERNAME,
+                )
+        owner_user = user
+    else:
+        if legacy_owner_user and not legacy_owner_user.roles_new:
+            User.batch_update_user_roles()
+        owner_user = next(iter(owner_users), None) or legacy_owner_user
+
+    oauth_client = Oauth2Application.query.filter(
+        Oauth2Application.client_id == OAUTH2_APPLICATION_CLIENT_ID,
+    ).first()
+    if not oauth_client:
+        logger.info('OAuth2 application doesn’t exist for frontend, creating OAuth2 application.')
+        oauth_client = Oauth2Application.create(
+            client_id=OAUTH2_APPLICATION_CLIENT_ID,
+            client_type=Oauth2Application.ClientType.PUBLIC,
+            name='frontend',
+            user_id=owner_user.id,
+        )
+
+    return oauth_client
 
 
 async def main(
@@ -330,8 +559,13 @@ async def main(
     port: Union[str, None] = None,
     project: Union[str, None] = None,
     project_type: ProjectType = ProjectType.STANDALONE,
+    status_only: bool = False,
 ):
-    switch_active_kernel(DEFAULT_KERNEL_NAME)
+    if not status_only:
+        from mage_ai.server.active_kernel import switch_active_kernel
+        from mage_ai.server.kernels import DEFAULT_KERNEL_NAME
+
+        switch_active_kernel(DEFAULT_KERNEL_NAME)
 
     # Update base path if environment variable is set
     update_routes = False
@@ -352,26 +586,33 @@ async def main(
     app = make_app(
         template_dir=template_dir,
         update_routes=update_routes,
+        status_only=status_only,
     )
 
     port = int(port)
     max_port = port + 100
-    while is_port_in_use(port):
-        if port > max_port:
-            raise Exception(
-                'Unable to find an open port, please clear your running processes if possible.'
-            )
-        port += 1
+    try:
+        while is_port_in_use(port, host=host):
+            if port > max_port:
+                raise Exception(
+                    'Unable to find an open port, please clear your running processes if possible.'
+                )
+            port += 1
+    except OSError:
+        logger.error(f'Socket error while trying to find an open port. Defaulting to port {port}')
 
     app.listen(
         port,
         address=host if host != 'localhost' else None,
     )
 
-    url = f'http://{host or "localhost"}:{port}'
+    host = host or 'localhost'
+    url = f'http://{host}:{port}'
     if update_routes:
         url = f'{url}/{ROUTES_BASE_PATH}'
-    webbrowser.open_new_tab(url)
+
+    if not DISABLE_AUTO_BROWSER_OPEN and not status_only:
+        webbrowser.open_new_tab(url)
     logger.info(f'Mage is running at {url} and serving project {project}')
 
     db_connection.start_session(force=True)
@@ -380,95 +621,94 @@ async def main(
     # Git sync if option is enabled
     preferences = get_preferences()
     if preferences.sync_config:
-        sync_config = GitConfig.load(config=preferences.sync_config)
-        if sync_config.sync_on_start:
-            try:
-                sync = GitSync(sync_config)
-                sync.sync_data()
-                logger.info(
-                    f'Successfully synced data from git repo: {sync_config.remote_repo_link}'
-                    f', branch: {sync_config.branch}'
-                )
-            except Exception as err:
-                logger.info(
-                    f'Failed to sync data from git repo: {sync_config.remote_repo_link}'
-                    f', branch: {sync_config.branch} with error: {str(err)}'
-                )
+        try:
+            from mage_ai.data_preparation.sync import GitConfig
+            from mage_ai.data_preparation.sync.git_sync import GitSync
 
-    if REQUIRE_USER_AUTHENTICATION:
-        logger.info('User authentication is enabled.')
-        # We need to sleep for a few seconds after creating all the tables or else there
-        # may be an error trying to create users.
-        sleep(5)
+            sync_config = GitConfig.load(config=preferences.sync_config)
+            sync = GitSync(sync_config, setup_repo=True)
+            if sync_config.remote_repo_link and sync_config.sync_on_start is True:
+                try:
+                    sync.sync_data()
+                    logger.info(
+                        f'Successfully synced data from git repo: {sync_config.remote_repo_link}'
+                        f', branch: {sync_config.branch}'
+                    )
+                except Exception:
+                    logger.exception(
+                        f'Failed to sync data from git repo: {sync_config.remote_repo_link}'
+                        f', branch: {sync_config.branch}'
+                    )
+        except Exception:
+            logger.exception('Failed to set up git repo')
 
-        # Create new roles on existing users. This should only need to be run once.
-        if project_type == ProjectType.SUB:
-            Role.create_default_roles(
-                entity=Entity.PROJECT,
-                entity_id=get_project_uuid(),
-                prefix=get_repo_name(),
+    if not status_only:
+        # Initialize web server related settings and cache
+        if REQUIRE_USER_AUTHENTICATION:
+            initialize_user_authentication(project_type)
+
+        if REQUIRE_USER_PERMISSIONS:
+            logger.info('User permissions requirement is enabled.')
+
+        try:
+            logger.info('Initializing block cache.')
+            logger.info('Initializing pipeline cache.')
+            await BlockCache.initialize_cache(replace=True, caches=[PipelineCache])
+        except Exception as err:
+            print(f'[ERROR] PipelineCache.initialize_cache: {err}.')
+            if is_debug():
+                raise err
+
+        logger.info('Initializing tag cache.')
+        await TagCache.initialize_cache(replace=True)
+
+        project_model = Project(root_project=True)
+        logger.info('Initializing block action object cache.')
+        await BlockActionObjectCache.initialize_cache(project=project_model, replace=True)
+
+        if project_model:
+            if project_model.spark_config and project_model.is_feature_enabled(
+                FeatureUUID.COMPUTE_MANAGEMENT
+            ):
+                Application.clear_cache()
+
+            if project_model.is_feature_enabled(FeatureUUID.DBT_V2):
+                try:
+                    logger.info('Initializing dbt cache.')
+                    dbt_cache = await DBTCache.initialize_cache_async(
+                        replace=True,
+                        root_project=True,
+                    )
+                    logger.info(f'dbt cached in {dbt_cache.file_path}')
+                except Exception as err:
+                    print(f'[ERROR] DBTCache.initialize_cache: {err}.')
+                    if is_debug():
+                        raise err
+
+            if project_model.is_feature_enabled(FeatureUUID.COMMAND_CENTER):
+                try:
+                    logger.info('Initializing file cache.')
+                    file_cache = FileCache.initialize_cache_with_settings(replace=True)
+                    count = len(file_cache._temp_data) if file_cache._temp_data else 0
+                    logger.info(
+                        f'{count} files cached in {file_cache.file_path}.',
+                    )
+                except Exception as err:
+                    print(f'[ERROR] FileCache.initialize_cache_with_settings: {err}.')
+                    if is_debug():
+                        raise err
+
+        try:
+            from mage_ai.services.ssh.aws.emr.models import create_tunnel
+
+            tunnel = create_tunnel(
+                clean_up_on_failure=True,
+                project=project_model,
             )
-        else:
-            Role.create_default_roles()
-
-        # Fetch legacy owner user to check if we need to batch update the users with new roles.
-        legacy_owner_user = User.query.filter(User._owner == True).first()  # noqa: E712
-
-        default_owner_role = Role.get_role(Role.DefaultRole.OWNER)
-        owner_users = default_owner_role.users if default_owner_role else []
-        if not legacy_owner_user and len(owner_users) == 0:
-            logger.info('User with owner permission doesn’t exist, creating owner user.')
-            if AUTHENTICATION_MODE.lower() == 'ldap':
-                user = User.create(
-                    roles_new=[default_owner_role],
-                    username=LDAP_ADMIN_USERNAME,
-                )
-            else:
-                password_salt = generate_salt()
-                user = User.create(
-                    email='admin@admin.com',
-                    password_hash=create_bcrypt_hash('admin', password_salt),
-                    password_salt=password_salt,
-                    roles_new=[default_owner_role],
-                    username='admin',
-                )
-            owner_user = user
-        else:
-            if legacy_owner_user and not legacy_owner_user.roles_new:
-                User.batch_update_user_roles()
-            owner_user = next(iter(owner_users), None) or legacy_owner_user
-
-        oauth_client = Oauth2Application.query.filter(
-            Oauth2Application.client_id == OAUTH2_APPLICATION_CLIENT_ID,
-        ).first()
-        if not oauth_client:
-            logger.info(
-                'OAuth2 application doesn’t exist for frontend, creating OAuth2 application.')
-            oauth_client = Oauth2Application.create(
-                client_id=OAUTH2_APPLICATION_CLIENT_ID,
-                client_type=Oauth2Application.ClientType.PUBLIC,
-                name='frontend',
-                user_id=owner_user.id,
-            )
-
-    if REQUIRE_USER_PERMISSIONS:
-        logger.info('User permissions requirement is enabled.')
-
-    logger.info('Initializing block cache.')
-    await BlockCache.initialize_cache(replace=True)
-
-    logger.info('Initializing tag cache.')
-    await TagCache.initialize_cache(replace=True)
-
-    logger.info('Initializing block action object cache.')
-    await BlockActionObjectCache.initialize_cache(replace=True)
-
-    # Check scheduler status periodically
-    periodic_callback = PeriodicCallback(
-        check_scheduler_status,
-        SCHEDULER_AUTO_RESTART_INTERVAL,
-    )
-    periodic_callback.start()
+            if tunnel:
+                print(f'SSH tunnel active: {tunnel.is_active()}')
+        except Exception as err:
+            print(f'[WARNING] SSH tunnel failed to create and connect: {err}')
 
     if ProjectType.MAIN == project_type:
         # Check scheduler status periodically
@@ -477,6 +717,26 @@ async def main(
             60_000,
         )
         auto_termination_callback.start()
+    else:
+        # Check scheduler status periodically
+        periodic_callback = PeriodicCallback(
+            check_scheduler_status,
+            SCHEDULER_AUTO_RESTART_INTERVAL,
+        )
+        periodic_callback.start()
+
+    get_memory_manager_controller().events
+
+    update_settings_on_metadata_change()
+    observer = Observer()
+    event_handler = MetadataEventHandler()
+    metadata_file = get_metadata_path(root_project=True)
+    if not os.path.exists(metadata_file):
+        os.makedirs(os.path.dirname(metadata_file), exist_ok=True)
+        with open(metadata_file, 'w') as f:
+            f.write('')
+    observer.schedule(event_handler, path=metadata_file)
+    observer.start()
 
     get_messages(
         lambda content: WebSocketServer.send_message(
@@ -485,6 +745,8 @@ async def main(
     )
 
     await asyncio.Event().wait()
+    # Used for the magic kernel
+    tornado.ioloop.IOLoop.current().start()
 
 
 def start_server(
@@ -516,14 +778,24 @@ def start_server(
             project_uuid=project_uuid,
         )
     set_repo_path(project)
-    init_project_uuid(overwrite_uuid=project_uuid)
+    init_project_uuid(overwrite_uuid=project_uuid, root_project=True)
 
     asyncio.run(UsageStatisticLogger().project_impression())
+
+    set_logging_format(
+        logging_format=SERVER_LOGGING_FORMAT,
+        level=SERVER_VERBOSITY,
+    )
+
+    if LoggingLevel.is_valid_level(SERVER_VERBOSITY):
+        options.logging = SERVER_VERBOSITY
+    enable_pretty_logging()
 
     if dbt_docs:
         run_docs_server()
     else:
-        run_web_server = True
+        set_db_schema()
+        run_web_server_with_status_only = False
         project_type = get_project_type()
         if manage or project_type == ProjectType.MAIN:
             os.environ[MANAGE_ENV_VAR] = '1'
@@ -537,8 +809,8 @@ def start_server(
             scheduler_manager.start_scheduler()
         elif instance_type == InstanceType.SCHEDULER:
             # Start a subprocess for scheduler
-            scheduler_manager.start_scheduler(foreground=True)
-            run_web_server = False
+            scheduler_manager.start_scheduler()
+            run_web_server_with_status_only = True
         elif instance_type == InstanceType.WEB_SERVER:
             # run migrations to enable user authentication
             try:
@@ -546,20 +818,16 @@ def start_server(
             except Exception:
                 traceback.print_exc()
 
-        if run_web_server:
-            if LoggingLevel.is_valid_level(SERVER_VERBOSITY):
-                options.logging = SERVER_VERBOSITY
-            enable_pretty_logging()
-
-            # Start web server
-            asyncio.run(
-                main(
-                    host=host,
-                    port=port,
-                    project=project,
-                    project_type=project_type,
-                )
+        # Start web server
+        asyncio.run(
+            main(
+                host=host,
+                port=port,
+                project=project,
+                project_type=project_type,
+                status_only=run_web_server_with_status_only,
             )
+        )
 
 
 if __name__ == '__main__':
@@ -577,9 +845,11 @@ if __name__ == '__main__':
     project = args.project
     manage = args.manage_instance == '1'
     dbt_docs = args.dbt_docs_instance == '1'
-    instance_type = args.instance_type
-    project_type = os.getenv('PROJECT_TYPE', ProjectType.STANDALONE)
-    cluster_type = os.getenv('CLUSTER_TYPE')
+    instance_type = os.getenv(ENV_VAR_INSTANCE_TYPE, args.instance_type)
+    project_type = os.getenv(MAGE_PROJECT_TYPE_ENV_VAR, ProjectType.STANDALONE)
+    cluster_type = os.getenv(MAGE_CLUSTER_TYPE_ENV_VAR)
+
+    initialize_globals()
 
     start_server(
         host=host,

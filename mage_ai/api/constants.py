@@ -1,20 +1,19 @@
-from enum import Enum
-
 from mage_ai.api.operations.constants import OperationType
 from mage_ai.orchestration.db.models.oauth import Permission
+from mage_ai.shared.enum import StrEnum
 
 
-class AttributeOperationType(str, Enum):
+class AttributeOperationType(StrEnum):
     QUERY = 'query'
     READ = 'read'
     WRITE = 'write'
 
 
-class AttributeType(str, Enum):
+class AttributeType(StrEnum):
     ALL = '__*MAGE*__'
 
 
-class AuthorizeStatusType(str, Enum):
+class AuthorizeStatusType(StrEnum):
     ALL = 'all'
     FAILED = 'failed'
     SUCCEEDED = 'succeeded'
@@ -52,3 +51,5 @@ ATTRIBUTE_OPERATION_TYPE_DISABLE_TO_ACCESS_MAPPING = {
 
 META_KEY_LIMIT = '_limit'
 META_KEY_OFFSET = '_offset'
+
+DOWNLOAD_TOKEN_LIFESPAN = 60  # Lifespan of generated download token in seconds

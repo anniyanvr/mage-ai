@@ -1,6 +1,18 @@
+import json
 import re
+from typing import List
 
 import inflection
+
+
+def is_json(myjson):
+    try:
+        json_object = json.loads(str(myjson))
+        if isinstance(json_object, dict):
+            return json_object
+        return False
+    except Exception:
+        return False
 
 
 def camel_to_snake_case(name):
@@ -29,6 +41,28 @@ def is_number(s) -> bool:
         return False
 
 
+def string_to_number(value: str):
+    """
+    Attempts to convert a string to an integer or float.
+
+    Parameters:
+    - value: The string to convert.
+
+    Returns:
+    - int, float, or original str depending on its content.
+    """
+    try:
+        # First, try to convert it to an integer.
+        return int(value)
+    except ValueError:
+        # If it fails, try to convert it to a float.
+        try:
+            return float(value)
+        except ValueError:
+            # If it also fails, return the original string.
+            return value
+
+
 def replacer(s, newstring, index, nofail=False):
     # raise an error if index is outside of the string
     if not nofail and index not in range(len(s)):
@@ -41,7 +75,7 @@ def replacer(s, newstring, index, nofail=False):
         return s + newstring
 
     # insert the new string between 'slices' of the original
-    return s[:index] + newstring + s[index + 1:]
+    return s[:index] + newstring + s[index + 1 :]
 
 
 def remove_extension_from_filename(filename: str) -> str:
@@ -52,3 +86,18 @@ def remove_extension_from_filename(filename: str) -> str:
 
 def singularize(word: str) -> str:
     return inflection.singularize(word)
+
+
+def capitalize_remove_underscore_lower(word: str) -> str:
+    return word.replace('_', ' ').lower().capitalize()
+
+
+def to_ordinal_integers(word: str) -> List[int]:
+    if not word:
+        return []
+
+    return [ord(char) - 96 for char in word]
+
+
+def size_of_string(string: str) -> float:
+    return len(str(string).encode('utf-8'))

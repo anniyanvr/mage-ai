@@ -7,14 +7,18 @@ function getHostCore(
   windowDefined: boolean,
   defaultHost: string = DEFAULT_HOST,
   defaultPort: string = DEFAULT_PORT,
-){
+  opts?: {
+    forceDefaultPort?: boolean;
+    forceCurrentPort?: boolean;
+  },
+) {
   let host = defaultHost;
-  if(windowDefined){
+  if (windowDefined) {
     host = window.location.hostname;
   }
-  if(host === defaultHost){
+  if ((host === defaultHost && !opts?.forceCurrentPort) || opts?.forceDefaultPort) {
     host = `${host}:${defaultPort}`;
-  } else if (windowDefined && !!window.location.port){
+  } else if (windowDefined && !!window.location.port) {
     host = `${host}:${window.location.port}`;
   }
 
@@ -33,34 +37,33 @@ function getHostCore(
   return `${host}${basePath}`;
 }
 
-function getProtocol(
+export function getProtocol(
   windowDefined: boolean,
   host: string,
   defaultHost: string = DEFAULT_HOST,
-){
+) {
   let protocol = 'http://';
-  if(host !== defaultHost){
+  if (host !== defaultHost) {
     protocol = 'https://';
-    if(windowDefined && !window.location.protocol?.match(/https/)) {
+    if (windowDefined && !window.location.protocol?.match(/https/)) {
       protocol = 'http://';
     }
   }
   return protocol;
 }
 
-function getHost(){
+export function getHost(opts?: { forceDefaultPort?: boolean; forceCurrentPort?: boolean }) {
   const windowDefined = typeof window !== 'undefined';
   const LOCALHOST = DEFAULT_HOST;
   const PORT = DEFAULT_PORT;
 
-  const host = getHostCore(windowDefined, LOCALHOST, PORT);
+  const host = getHostCore(windowDefined, LOCALHOST, PORT, opts);
   const protocol = getProtocol(windowDefined, host, LOCALHOST);
 
-  return `${protocol}${host}/api`;
+  return `${protocol}${host}`;
 }
 
-
-export function getWebSocket(path='') {
+export function getWebSocket(path = '') {
   const windowDefined = typeof window !== 'undefined';
   const LOCALHOST = DEFAULT_HOST;
   const PORT = DEFAULT_PORT;
@@ -74,6 +77,20 @@ export function getWebSocket(path='') {
   return `${prefix}${host}/websocket/${path}`;
 }
 
+export function getEventStreamsUrl(uuid?: string): string {
+  const windowDefined = typeof window !== 'undefined';
+  const LOCALHOST = DEFAULT_HOST;
+  const PORT = DEFAULT_PORT;
+
+  const host = getHostCore(windowDefined, LOCALHOST, PORT);
+
+  let prefix = 'http://';
+  if (windowDefined && window.location.protocol?.match(/https/)) {
+    prefix = 'https://';
+  }
+  return `${prefix}${host}/event-streams/${uuid || ''}`;
+}
+
 export function buildUrl(
   resource: string,
   id: string = null,
@@ -81,16 +98,19 @@ export function buildUrl(
   childId: string = null,
   query: any = {},
   grandchildResource: string = null,
+  opts?: {
+    excludeApi?: boolean;
+  },
 ): string {
-  let path: string =`${getHost()}/${resource}`;
+  let path: string = `${getHost()}${opts?.excludeApi ? '' : '/api'}/${resource}`;
 
-  if (id) {
+  if (typeof id !== 'undefined' && id !== null) {
     path = `${path}/${id}`;
   }
   if (childResource) {
     path = `${path}/${childResource}`;
   }
-  if (childId) {
+  if (typeof childId !== 'undefined' && childId !== null) {
     path = `${path}/${childId}`;
   }
   if (grandchildResource) {

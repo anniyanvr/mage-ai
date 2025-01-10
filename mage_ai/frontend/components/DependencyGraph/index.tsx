@@ -32,7 +32,9 @@ import Panel from '@oracle/components/Panel';
 import PipelineType, { PipelineTypeEnum } from '@interfaces/PipelineType';
 import Spacing from '@oracle/elements/Spacing';
 import Text from '@oracle/elements/Text';
+import ZoomControls, { DEFAULT_ZOOM_LEVEL } from './ZoomControls';
 import api from '@api';
+import useProject from '@utils/models/project/useProject';
 import {
   EdgeType,
   NodeType,
@@ -162,8 +164,17 @@ export type DependencyGraphProps = {
   };
   blocksOverride?: BlockType[];
   blocks?: BlockType[];
+  contentByBlockUUID?: {
+    current: {
+      [blockType: string]: {
+        [blockUUID: string]: string;
+      };
+    };
+  };
+  contextMenuEnabled?: boolean;
   deleteBlock?: (block: BlockType) => void;
   disabled?: boolean;
+  dragEnabled?: boolean;
   editingBlock?: {
     upstreamBlocks: {
       block: BlockType;
@@ -216,8 +227,11 @@ function DependencyGraph({
   blockStatus,
   blocksOverride,
   blocks: allBlocksProp,
+  contentByBlockUUID,
+  contextMenuEnabled,
   deleteBlock,
   disabled: disabledProp,
+  dragEnabled,
   editingBlock,
   enablePorts = false,
   fetchPipeline,
@@ -241,6 +255,7 @@ function DependencyGraph({
   treeRef,
   zoomable = true,
 }: DependencyGraphProps) {
+  const { featureEnabled, featureUUIDs } = useProject();
   const themeContext: ThemeType = useContext(ThemeContext);
   const colorsInverse = useMemo(() => inverseColorsMapping(themeContext), [themeContext]);
 
@@ -250,6 +265,7 @@ function DependencyGraph({
   const timeoutDraggingRefs = useRef({});
   const treeInnerRef = useRef<CanvasRef>(null);
   const canvasRef = treeRef || treeInnerRef;
+  const [zoomLevel, setZoomLevel] = useState<number>(DEFAULT_ZOOM_LEVEL);
 
   const [activeEdge, setActiveEdge] = useState<{
     block: BlockType;
@@ -277,7 +293,7 @@ function DependencyGraph({
         setNodeDragging(prev => ({
           ...prev,
           event,
-        }))
+        }));
       }
     };
     const handleMouseUp = (event) => {
@@ -349,11 +365,11 @@ function DependencyGraph({
       const mapping = {};
       const arr2 = [];
 
-      arr2.push(...pipeline?.blocks);
-      arr2.push(...pipeline?.callbacks);
-      arr2.push(...pipeline?.conditionals);
+      arr2.push(...(pipeline?.blocks || []));
+      arr2.push(...(pipeline?.callbacks || []));
+      arr2.push(...(pipeline?.conditionals || []));
 
-      Object.values(pipeline?.extensions).forEach(({ blocks }) => {
+      Object.values(pipeline?.extensions || {}).forEach(({ blocks }) => {
         arr2.push(...blocks);
       });
 
@@ -372,6 +388,7 @@ function DependencyGraph({
     blocksOverride,
     pipeline,
   ]);
+
   const blockUUIDMapping =
     useMemo(() => indexBy(allBlocks || [], ({ uuid }) => uuid), [allBlocks]);
 
@@ -497,22 +514,26 @@ function DependencyGraph({
     upstreamBlocks,
   }: {
     block: BlockType;
+    blocks?: BlockType[];
     downstreamBlocks?: string[];
     upstreamBlocks?: string[];
   }) => {
-    let blockPayload = {
+    const blockPayload = {
       ...blockToUpdate,
     };
 
     if (typeof downstreamBlocks !== 'undefined') {
       blockPayload.downstream_blocks = downstreamBlocks;
-    };
+    }
 
     if (typeof upstreamBlocks !== 'undefined') {
       blockPayload.upstream_blocks = upstreamBlocks;
-    };
+    }
 
-    return api.blocks.pipelines.useUpdate(pipeline?.uuid, encodeURIComponent(blockToUpdate.uuid))({
+    return api.blocks.pipelines.useUpdate(
+      encodeURIComponent(pipeline?.uuid),
+      encodeURIComponent(blockToUpdate?.uuid),
+    )({
       block: blockPayload,
     });
   },
@@ -545,6 +566,7 @@ function DependencyGraph({
     blockRefs,
     setSelectedBlock,
   ]);
+
   const onClickWhenEditingUpstreamBlocks = useCallback((block: BlockType) => {
     setEdgeSelections([]);
     // @ts-ignore
@@ -651,7 +673,7 @@ function DependencyGraph({
       }
     }
 
-    const disabled = blockEditing?.uuid === block.uuid;
+    const disabled = blockEditing?.uuid === block?.uuid;
     if (!disabled) {
       if (blockEditing) {
         onClickWhenEditingUpstreamBlocks(block);
@@ -662,14 +684,20 @@ function DependencyGraph({
 
         if (selectedBlock
           && selectedBlock?.uuid === block?.uuid
-          && selectedBlockTwice
-          && selectedBlockTwice?.uuid === selectedBlock?.uuid
+          && (
+            ((block?.downstream_blocks?.length || 0) <= 1 && !block?.upstream_blocks?.length)
+            || (selectedBlockTwice && selectedBlockTwice?.uuid === selectedBlock?.uuid)
+          )
         ) {
           setSelectedBlock?.(null);
           setSelectedBlockTwice(null);
         } else {
-          if (selectedBlock && selectedBlock?.uuid === block?.uuid) {
-            setSelectedBlockTwice(block);
+          if (selectedBlock) {
+            if (selectedBlock?.uuid === block?.uuid) {
+              setSelectedBlockTwice(block);
+            } else {
+              setSelectedBlockTwice(null);
+            }
           }
 
           // This is required because if the block is hidden, it needs to be un-hidden
@@ -826,7 +854,7 @@ function DependencyGraph({
         event,
         node,
       });
-    }, 500)
+    }, 500);
   }, [
     contextMenuData,
     setActiveNodes,
@@ -856,7 +884,10 @@ function DependencyGraph({
       event,
       node,
     });
+
+    setActiveEdge(null);
   }, [
+    setActiveEdge,
     setContextMenuData,
   ]);
 
@@ -1078,7 +1109,7 @@ function DependencyGraph({
             opacity={opacity}
             pipeline={pipeline}
             selected={selected}
-          />
+          />,
         );
       });
 
@@ -1174,12 +1205,12 @@ function DependencyGraph({
     noStatus,
     pipeline,
     runningBlocks,
-    runningBlocksMapping
+    runningBlocksMapping,
   ]);
 
   const nodeDraggingMemo = useMemo(() => {
     if (!isDragging || !nodeDragging) {
-      return
+      return;
     }
 
     const {
@@ -1299,7 +1330,7 @@ function DependencyGraph({
         block: toBlock,
         upstreamBlocks: (toBlock?.upstream_blocks || []).filter(uuid => uuid !== fromBlock?.uuid),
       });
-    }
+    };
 
     if (infos?.length >= 1) {
       infos?.forEach(({
@@ -1332,6 +1363,25 @@ function DependencyGraph({
           };
         }
       });
+    } else if (!fromBlock && !toBlock) {
+      const blocksInGroup = [];
+
+      edge?.to?.split(':')?.forEach((part) => {
+        if (part?.length >= 1 && part !== 'parent') {
+          const block2 = blockUUIDMapping?.[part];
+
+          if (block2) {
+            blocksInGroup.push(block2);
+          }
+        }
+      });
+
+      removeBlocks = () => {
+        blocksInGroup?.forEach(block => updateBlockByDragAndDrop({
+          block,
+          downstreamBlocks: [],
+        }));
+      };
     }
 
     return (
@@ -1350,6 +1400,7 @@ function DependencyGraph({
           <Panel noPadding>
             <Spacing px={PADDING_UNITS} py={1}>
               <Link
+                block
                 onClick={() => {
                   const idx = blocks?.findIndex(({ uuid }) => uuid === toBlock?.uuid);
 
@@ -1377,6 +1428,7 @@ function DependencyGraph({
 
             <Spacing px={PADDING_UNITS} py={1}>
               <Link
+                block
                 onClick={() => {
                   removeBlocks?.();
                   setActiveEdge(null);
@@ -1396,6 +1448,12 @@ function DependencyGraph({
     blocks,
     setActiveEdge,
     updateBlockByDragAndDrop,
+  ]);
+
+  // @ts-ignore
+  const interactionsEnabled: boolean = useMemo(() => featureEnabled?.(featureUUIDs.INTERACTIONS), [
+    featureEnabled,
+    featureUUIDs,
   ]);
 
   const contextMenuMemo = useMemo(() => {
@@ -1433,15 +1491,27 @@ function DependencyGraph({
 
     const idx = blocks?.findIndex(({ uuid }) => uuid === block?.uuid);
 
-    const menuItems = [
-      {
+    const isIntegrationPipeline = PipelineTypeEnum.INTEGRATION === pipeline?.type;
+
+    const menuItems: {
+      disabled?: boolean;
+      onClick: () => void;
+      uuid: string;
+    }[] = [];
+
+    if (!isIntegrationPipeline) {
+      menuItems.push({
         onClick: () => {
           runBlock?.({
             block,
+            code: contentByBlockUUID?.current?.[block?.type]?.[block?.uuid],
           });
         },
         uuid: 'Run block',
-      },
+      });
+    }
+
+    menuItems.push(...[
       {
         onClick: () => {
           showUpdateBlockModal(
@@ -1451,59 +1521,82 @@ function DependencyGraph({
         },
         uuid: 'Rename block',
       },
-      {
-        onClick: () => {
-          setSelectedBlock?.(allDependenciesShowing ? null : block);
-          setSelectedBlockTwice(allDependenciesShowing ? null : block);
+    ]);
+
+    if (!isIntegrationPipeline) {
+      menuItems.push(...[
+        {
+          disabled: ((block?.downstream_blocks?.length || 0) <= 1 && !block?.upstream_blocks?.length),
+          onClick: () => {
+            setSelectedBlock?.(allDependenciesShowing ? null : block);
+            setSelectedBlockTwice(allDependenciesShowing ? null : block);
+          },
+          uuid: allDependenciesShowing ? 'Hide all dependencies' : 'Show all dependencies',
         },
-        uuid: allDependenciesShowing ? 'Hide all dependencies' : 'Show all dependencies',
-      },
-      {
-        onClick: () => {
-          addNewBlockAtIndex?.(
-            {
-              downstream_blocks: block ? [block?.uuid] : null,
-              language: block?.language,
-              type: BlockTypeEnum.CUSTOM,
-            },
-            Math.max(0, idx - 1),
-          );
+        {
+          onClick: () => {
+            addNewBlockAtIndex?.(
+              {
+                downstream_blocks: block ? [block?.uuid] : null,
+                language: BlockLanguageEnum.YAML === block?.language
+                  ? BlockLanguageEnum.PYTHON
+                  : block?.language,
+                type: BlockTypeEnum.CUSTOM,
+              },
+              Math.max(0, idx - 1),
+            );
+          },
+          uuid: 'Add upstream block',
         },
-        uuid: 'Add upstream block',
-      },
-      {
-        onClick: () => {
-          addNewBlockAtIndex?.(
-            {
-              language: block?.language,
-              type: BlockTypeEnum.CUSTOM,
-              upstream_blocks: block ? [block?.uuid] : null,
-            },
-            idx + 1,
-          );
+        {
+          onClick: () => {
+            addNewBlockAtIndex?.(
+              {
+                language: BlockLanguageEnum.YAML === block?.language
+                  ? BlockLanguageEnum.PYTHON
+                  : block?.language,
+                type: BlockTypeEnum.CUSTOM,
+                upstream_blocks: block ? [block?.uuid] : null,
+              },
+              idx + 1,
+            );
+          },
+          uuid: 'Add downstream block',
         },
-        uuid: 'Add downstream block',
-      },
-      {
-        disabled: !block?.upstream_blocks?.length,
-        onClick: () => {
-          updateBlockByDragAndDrop({
-            block,
-            upstreamBlocks: [],
-          });
+        {
+          disabled: !block?.upstream_blocks?.length,
+          onClick: () => {
+            updateBlockByDragAndDrop({
+              block,
+              upstreamBlocks: [],
+            });
+          },
+          uuid: 'Remove upstream dependencies',
         },
-        uuid: 'Remove upstream dependencies',
-      },
-      {
-        disabled: !block?.downstream_blocks?.length,
-        onClick: () => {
-          updateBlockByDragAndDrop({
-            block,
-            downstreamBlocks: [],
-          });
+        {
+          disabled: !block?.downstream_blocks?.length,
+          onClick: () => {
+            updateBlockByDragAndDrop({
+              block,
+              downstreamBlocks: [],
+            });
+          },
+          uuid: 'Remove downstream dependencies',
         },
-        uuid: 'Remove downstream dependencies',
-      },
+      ]);
+    }
+
+    if (interactionsEnabled) {
+      menuItems.push({
+        onClick: () => {
+          onClick?.(block);
+          setActiveSidekickView?.(ViewKeyEnum.INTERACTIONS);
+        },
+        uuid: 'Add / Edit interactions',
+      });
+    }
+
+    menuItems.push(...[
       {
         onClick: () => {
           deleteBlock?.(block);
@@ -1521,12 +1614,12 @@ function DependencyGraph({
       },
       {
         onClick: () => {
-          setSelectedBlock?.(block);
-          setActiveSidekickView(ViewKeyEnum.FILE_VERSIONS);
+          onClick?.(block);
+          setActiveSidekickView?.(ViewKeyEnum.FILE_VERSIONS);
         },
         uuid: 'View file versions',
       },
-    ];
+    ]);
 
     return (
       <div
@@ -1549,6 +1642,7 @@ function DependencyGraph({
             }) => (
               <Spacing key={uuid} px={PADDING_UNITS} py={1}>
                 <Link
+                  block
                   disabled={disabled}
                   onClick={() => {
                     onClick();
@@ -1568,8 +1662,12 @@ function DependencyGraph({
   }, [
     addNewBlockAtIndex,
     blocks,
+    contentByBlockUUID,
     contextMenuData,
     deleteBlock,
+    interactionsEnabled,
+    onClick,
+    pipeline,
     runBlock,
     setActiveSidekickView,
     setContextMenuData,
@@ -1671,6 +1769,11 @@ function DependencyGraph({
         height={containerHeight}
         onDoubleClick={() => canvasRef?.current?.fitCanvas?.()}
       >
+        <ZoomControls
+          canvasRef={canvasRef}
+          containerRef={containerRef}
+          zoomLevel={zoomLevel}
+        />
         <Canvas
           // arrow={<MarkerArrow style={{ fill: themeContext?.borders?.light }} />}
           arrow={null}
@@ -1721,10 +1824,8 @@ function DependencyGraph({
                   ...block?.downstream_blocks?.map((uuid) => blockUUIDMapping?.[uuid]),
                 );
               } else {
-                const downstreamBlockUUID = block?.downstream_blocks?.find((uuid) => {
-                  return buildPortIDDownstream(blockUUID, uuid) === edge?.sourcePort
-                    || getParentNodeID(blockUUID) === edge.target;
-                });
+                const downstreamBlockUUID = block?.downstream_blocks?.find((uuid) => buildPortIDDownstream(blockUUID, uuid) === edge?.sourcePort
+                    || getParentNodeID(blockUUID) === edge.target);
                 const downstreamBlock = blockUUIDMapping?.[downstreamBlockUUID];
                 downstreamBlocks.push(downstreamBlock);
               }
@@ -1755,7 +1856,7 @@ function DependencyGraph({
                 if (status?.isQueued) {
                   isQueued = status?.isQueued;
                 }
-              };
+              }
             });
 
             const {
@@ -1776,18 +1877,46 @@ function DependencyGraph({
               theme: themeContext,
             });
 
+            const edgeClassNames = [
+              'edge',
+              isInProgress
+                ? (isQueued
+                  ? 'activeSlow'
+                  : 'active'
+                )
+                : 'inactive',
+            ];
+
+            const blockUUIDs = blocks.map(({ uuid }) => uuid);
+            if (selectedBlockTwice) {
+              if (selectedBlockTwice?.uuid === blockUUID
+                || blockUUIDs?.includes(selectedBlockTwice?.uuid)
+                || downstreamBlocks?.map(b => b?.uuid)?.includes(selectedBlockTwice?.uuid)
+              ) {
+                edgeClassNames.push('selected-twice');
+              }
+            }
+
+            if (edge?.target?.startsWith('parent')) {
+              edgeClassNames.push('group');
+            }
+
             return (
               <Edge
                 {...edge}
-                className={`edge ${isInProgress ? (isQueued ? 'activeSlow' : 'active') : 'inactive'}`}
-                onClick={(event, edge) => {
-                  // @ts-ignore
-                  setActiveEdge(prev => prev?.edge?.id === edge?.id ? null : {
-                    block,
-                    edge,
-                    event,
-                  });
-                }}
+                className={edgeClassNames.join(' ')}
+                onClick={contextMenuEnabled
+                  ? (event, edge) => {
+                    // @ts-ignore
+                    setActiveEdge(prev => prev?.edge?.id === edge?.id ? null : {
+                      block,
+                      edge,
+                      event,
+                    });
+                    setContextMenuData(null);
+                  }
+                  : null
+                }
                 style={{
                   stroke: anotherBlockSelected && !selected
                     ? colorData?.accentLight
@@ -1822,7 +1951,7 @@ function DependencyGraph({
           maxHeight={ZOOMABLE_CANVAS_SIZE}
           maxWidth={ZOOMABLE_CANVAS_SIZE}
           maxZoom={1}
-          minZoom={-0.7}
+          minZoom={-1}
           node={(node) => {
             const nodeID = node?.id;
             const {
@@ -1956,11 +2085,21 @@ function DependencyGraph({
                   return (
                     <foreignObject
                       height={nodeHeight}
-                      onClick={(e) => onClickNode(e, node)}
-                      onContextMenu={(e) => onContextMenuNode(e, node, {
-                        nodeHeight,
-                        nodeWidth,
-                      })}
+                      onClick={(e) => onClickNode?.(e, node)}
+                      onContextMenu={contextMenuEnabled
+                        ? (e) => onContextMenuNode(e, node, {
+                          nodeHeight,
+                          nodeWidth,
+                        })
+                        : null
+                      }
+                      onMouseDown={dragEnabled
+                        ? (e) => onMouseDownNode(e, node, {
+                          nodeHeight,
+                          nodeWidth,
+                        })
+                        : null
+                      }
                       onMouseEnter={(e) => onMouseEnterNode(e, node, {
                         nodeHeight,
                         nodeWidth,
@@ -1969,14 +2108,13 @@ function DependencyGraph({
                         nodeHeight,
                         nodeWidth,
                       })}
-                      onMouseDown={(e) => onMouseDownNode(e, node, {
-                        nodeHeight,
-                        nodeWidth,
-                      })}
-                      onMouseUp={(e) => onMouseUpNode(e, node, {
-                        nodeHeight,
-                        nodeWidth,
-                      })}
+                      onMouseUp={dragEnabled
+                        ? (e) => onMouseUpNode(e, node, {
+                          nodeHeight,
+                          nodeWidth,
+                        })
+                        : null
+                      }
                       style={{
                         // https://reaflow.dev/?path=/story/docs-advanced-custom-nodes--page#the-foreignobject-will-steal-events-onclick-onenter-onleave-etc-that-are-bound-to-the-rect-node
                         // pointerEvents: 'none',
@@ -1991,7 +2129,7 @@ function DependencyGraph({
                         blocksWithSameDownstreamBlocks={blocksWithSameDownstreamBlocks}
                         callbackBlocks={callbackBlocksByBlockUUID?.[block?.uuid]}
                         conditionalBlocks={conditionalBlocksByBlockUUID?.[block?.uuid]}
-                        disabled={blockEditing?.uuid === block.uuid}
+                        disabled={blockEditing?.uuid === block?.uuid}
                         downstreamBlocks={downstreamBlocks}
                         extensionBlocks={extensionBlocksByBlockUUID?.[block?.uuid]}
                         hasFailed={hasFailed}
@@ -2001,7 +2139,7 @@ function DependencyGraph({
                         isInProgress={isInProgressFinal}
                         isQueued={isQueued}
                         isSuccessful={isSuccessful}
-                        key={block.uuid}
+                        key={block?.uuid}
                         pipeline={pipeline}
                         selected={selected}
                         selectedBlock={selectedBlock}
@@ -2014,7 +2152,11 @@ function DependencyGraph({
           }}
           nodes={nodes}
           onNodeLinkCheck={(event, from, to) => !edges.some(e => e.from === from.id && e.to === to.id)}
-          onZoomChange={z => setZoom?.(z)}
+          onZoomChange={z => {
+            const zFinal = Math.max(z, 0.05);
+            setZoom?.(zFinal);
+            setZoomLevel(zFinal);
+          }}
           pannable={pannable}
           selections={edgeSelections}
           zoomable={zoomable}

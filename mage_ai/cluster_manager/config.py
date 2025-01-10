@@ -28,6 +28,7 @@ class KubernetesWorkspaceConfig(WorkspaceConfig):
     namespace: str = None
     container_config: str = None
     ingress_name: str = None
+    pvc_retention_policy: str = None
     service_account_name: str = None
     storage_access_mode: str = None
     storage_class_name: str = None
@@ -64,7 +65,7 @@ class PostStart(BaseConfig):
         hook_path = config.get('hook_path')
         if hook_path and not os.path.isabs(hook_path):
             config['hook_path'] = os.path.join(
-                get_repo_path(), hook_path
+                get_repo_path(root_project=True), hook_path
             )
 
         return config
@@ -81,7 +82,7 @@ class LifecycleConfig(BaseConfig):
         pre_start_script_path = config.get('pre_start_script_path')
         if pre_start_script_path and not os.path.isabs(pre_start_script_path):
             config['pre_start_script_path'] = os.path.join(
-                get_repo_path(), pre_start_script_path
+                get_repo_path(root_project=True), pre_start_script_path
             )
 
         return config

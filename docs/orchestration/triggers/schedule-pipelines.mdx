@@ -13,13 +13,12 @@ description: "Schedule pipelines to run periodically"
 
 You can schedule your pipeline to run on these intervals:
 
-- Once
-- Hourly
-- Daily
-- Weekly
-- Monthly
-- Always on
-    - The pipeline will be run as soon as the previous pipeline run is finished
+- Once:  The pipeline will run only once
+- Hourly: The pipeline will run at the beginning of every hour (i.e 0100, 0200, 0300, etc)
+- Daily: The pipeline will run at 0000 UTC / GMT every day
+- Weekly: The pipeline will run at 0000 UTC / GMT the first day (Monday) of every week
+- Monthly: The pipeline will run at 0000 UTC / GMT on the first day of every month
+- Always on: The pipeline will be run as soon as the previous pipeline run is finished
 - Custom schedule using
   [CRON Expression](https://en.wikipedia.org/wiki/Cron#CRON_expression)
 - Every minute using CRON expression: `* * * * *`
@@ -27,35 +26,19 @@ You can schedule your pipeline to run on these intervals:
 Learn more about how to
 [schedule pipelines](/design/data-pipeline-management#create-trigger).
 
-## Landing times
-
-If the trigger type is a schedule then instead of choosing when the pipeline will run,
-you can choose the pipeline’s landing time.
-
-This is useful if you want your data pipeline to finish at a specific time instead of start at
-a specific time.
-
-For example, a pipeline is scheduled to land daily at 17:00 UTC.
-If this pipeline takes 10 hours on average to complete, then the pipeline will be triggered and
-start running at 05:00 UTC each day.
-
-### Enable landing time
-
-When editing a trigger with schedule type, there is a toggle called `Enable landing time`.
-Turn that on to enable landing time for the trigger.
-
-### Configure landing time
-
-Depending on the frequency, you’ll be able to configure the following times the pipeline
-should complete:
-
-- Day of the month
-- Day of the week
-- Hour of the day
-- Minute of the hour
-- Second of the minute
-
 ## Extra runtime variables from pipeline run
+
+Default runtime variables from pipeline run:
+
+| Key | Description | Example |
+| --- | --- | --- |
+| `env` | The value is always `prod` in pipeline runs. The value is `dev` when running blocks in notebook. | `prod` |
+| `event` | If the pipeline is triggered by event, the event variable contains the event payload. | `{"key1": "value1"}` |
+| `execution_date` | A datetime object that the pipeline is executed at. | `86400` |
+| `execution_partition` | An automatically formatted partition of the pipeline run using the execution date. | `10/20231225T122520` |
+| `pipeline_run_id` | The id of the pipeline run. | `10` |
+| `trigger_name` | The trigger name of the pipeline run. | `test run 1` |
+
 
 If your pipeline run belongs to a trigger that is scheduled, then the following extra
 variables are available in your Python block’s keyword arguments (e.g. `kwargs`).

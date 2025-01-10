@@ -1,12 +1,12 @@
 import json
-from typing import Dict, List
+from typing import Dict, List, Union
 
 from mage_ai.services.aws import get_aws_boto3_client
 from mage_ai.services.aws.ecs.config import EcsConfig
 
 
 def run_task(
-    command: str,
+    command: Union[str, Dict],
     ecs_config: EcsConfig,
     wait_for_completion: bool = True,
 ) -> None:
@@ -16,6 +16,7 @@ def run_task(
     response = client.run_task(**ecs_config.get_task_config(command=command))
 
     print(json.dumps(response, indent=4, default=str))
+    wait_for_completion = False if ecs_config.wait_timeout == -1 else wait_for_completion
 
     if wait_for_completion:
         arn = response['tasks'][0]['taskArn']

@@ -119,7 +119,9 @@ export type SidekickProps = {
   isPipelineExecuting: boolean;
   lastTerminalMessage: WebSocketEventMap['message'] | null;
   metadata: MetadataType;
-  onUpdateFileSuccess?: (fileContent: FileType) => void;
+  onUpdateFileSuccess?: (fileContent: FileType, opts?: {
+    blockUUID: string;
+  }) => void;
   permissions?: InteractionPermission[] | InteractionPermissionWithUUID[];
   pipeline: PipelineType;
   pipelineInteraction: PipelineInteractionType;
@@ -141,7 +143,6 @@ export type SidekickProps = {
   setBlockInteractionsMapping: (prev: any) => {
     [blockUUID: string]: BlockInteractionType[];
   };
-  setDepGraphZoom?: (zoom: number) => void;
   setDisableShortcuts: (disableShortcuts: boolean) => void;
   setHiddenBlocks: ((opts: {
     [uuid: string]: BlockType;
@@ -220,7 +221,6 @@ function Sidekick({
   setAllowCodeBlockShortcuts,
   setAnyInputFocused,
   setBlockInteractionsMapping,
-  setDepGraphZoom,
   setDisableShortcuts,
   setEditingBlock,
   setErrors,
@@ -526,6 +526,7 @@ function Sidekick({
       fetchPipeline={fetchPipeline}
       globalDataProducts={globalDataProducts}
       pipeline={pipeline}
+      project={project}
       setSelectedBlock={setSelectedBlock}
       showDataIntegrationModal={showDataIntegrationModal}
       showUpdateBlockModal={showUpdateBlockModal}
@@ -537,6 +538,7 @@ function Sidekick({
     fetchPipeline,
     globalDataProducts,
     pipeline,
+    project,
     selectedBlock,
     setSelectedBlock,
     showDataIntegrationModal,
@@ -601,7 +603,10 @@ function Sidekick({
                 addNewBlockAtIndex={addNewBlockAtIndex}
                 blockRefs={blockRefs}
                 blocks={blocks}
+                contentByBlockUUID={contentByBlockUUID}
+                contextMenuEnabled
                 deleteBlock={deleteBlock}
+                dragEnabled
                 editingBlock={editingBlock}
                 enablePorts={!isIntegration}
                 fetchPipeline={fetchPipeline}
@@ -634,7 +639,6 @@ function Sidekick({
                     scrollToBlock(block);
                   }
                 }}
-                setZoom={setDepGraphZoom}
                 showUpdateBlockModal={showUpdateBlockModal}
                 treeRef={treeRef}
               />

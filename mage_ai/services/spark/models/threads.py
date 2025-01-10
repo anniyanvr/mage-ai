@@ -1,11 +1,11 @@
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import List
 
 from mage_ai.services.spark.models.base import BaseSparkModel
+from mage_ai.shared.enum import StrEnum
 
 
-class ThreadState(str, Enum):
+class ThreadState(StrEnum):
     RUNNABLE = 'RUNNABLE'
     TIMED_WAITING = 'TIMED_WAITING'
     WAITING = 'WAITING'
@@ -30,10 +30,10 @@ class Thread(BaseSparkModel):
     thread_state: ThreadState = None  # "TIMED_WAITING"
 
     def __post_init__(self):
-        if self.stack_trace:
+        if self.stack_trace and isinstance(self.stack_trace, dict):
             self.stack_trace = StackTrace.load(**self.stack_trace)
 
-        if self.thread_state:
+        if self.thread_state and isinstance(self.thread_state, str):
             try:
                 self.thread_state = ThreadState(self.thread_state)
             except ValueError as err:

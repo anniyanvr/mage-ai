@@ -22,12 +22,16 @@ import PipelineRunType, {
   RunStatus,
 } from '@interfaces/PipelineRunType';
 import PipelineType from '@interfaces/PipelineType';
-import PipelineVariableType, { GLOBAL_VARIABLES_UUID } from '@interfaces/PipelineVariableType';
+import PipelineVariableType, {
+  GLOBAL_VARIABLES_UUID,
+  VariableType,
+} from '@interfaces/PipelineVariableType';
 import Select from '@oracle/elements/Inputs/Select';
 import Spacing from '@oracle/elements/Spacing';
 import Spinner from '@oracle/components/Spinner';
 import Table from '@components/shared/Table';
 import Text from '@oracle/elements/Text';
+import Tooltip from '@oracle/components/Tooltip';
 import api from '@api';
 import buildTableSidekick, { TABS } from '@components/PipelineRun/shared/buildTableSidekick';
 import {
@@ -41,6 +45,7 @@ import {
   Switch,
 } from '@oracle/icons';
 import { BeforeStyle } from '@components/PipelineDetail/shared/index.style';
+import { ICON_SIZE_DEFAULT } from '@oracle/styles/units/icons';
 import {
   PADDING_UNITS,
   UNIT,
@@ -48,12 +53,12 @@ import {
 } from '@oracle/styles/units/spacing';
 import { PageNameEnum } from '@components/PipelineDetailPage/constants';
 import { capitalize } from '@utils/string';
-import { datetimeInLocalTimezone } from '@utils/date';
+import { displayLocalOrUtcTime } from '@components/Triggers/utils';
 import {
   getFormattedVariable,
   getFormattedVariables,
 } from '@components/Sidekick/utils';
-import { getTimeInUTCString } from '@components/Triggers/utils';
+import { getRunStatusTextProps } from '@components/shared/Table/constants';
 import { goToWithQuery } from '@utils/routing';
 import { isEmptyObject } from '@utils/hash';
 import { isViewer } from '@utils/session';
@@ -81,9 +86,9 @@ function BackfillDetail({
   setErrors,
   variables,
 }: BackfillDetailProps) {
-  const isViewerRole = isViewer();
-  const displayLocalTimezone = shouldDisplayLocalTimezone();
   const router = useRouter();
+  const isViewerRole = isViewer(router?.basePath);
+  const displayLocalTimezone = shouldDisplayLocalTimezone();
   const {
     block_uuid: blockUUID,
     end_datetime: endDatetime,
@@ -93,6 +98,7 @@ function BackfillDetail({
     name: modelName,
     pipeline_run_dates: pipelineRunDates,
     start_datetime: startDatetime,
+    started_at: startedAt,
     status,
     total_run_count: totalRunCount,
     variables: modelVariablesInit = {},
@@ -140,7 +146,10 @@ function BackfillDetail({
       showPreviewRuns,
     ],
   );
-  const totalRuns = useMemo(() => dataPipelineRuns?.metadata?.count || [], [dataPipelineRuns]);
+  const totalRuns = useMemo(
+    () => showPreviewRuns ? totalRunCount : dataPipelineRuns?.metadata?.count,
+    [dataPipelineRuns, showPreviewRuns, totalRunCount],
+  );
 
   const [selectedRun, setSelectedRun] = useState<PipelineRunType>(null);
   const tablePipelineRuns = useMemo(() => {
@@ -150,11 +159,12 @@ function BackfillDetail({
       <>
         <PipelineRunsTable
           disableRowSelect={showPreviewRuns}
-          emptyMessage={!q?.status
+          emptyMessage={(!q?.status && !status)
             ? 'No runs available. Please complete backfill configuration by clicking "Edit backfill" above.'
             : 'No runs available'
           }
           fetchPipelineRuns={fetchPipelineRuns}
+          hidePipelineColumn
           onClickRow={(rowIndex: number) => setSelectedRun((prev) => {
             const run = pipelineRuns[rowIndex];
 
@@ -195,6 +205,7 @@ function BackfillDetail({
     selectedRun,
     setErrors,
     showPreviewRuns,
+    status,
     totalRuns,
   ]);
 
@@ -268,12 +279,8 @@ function BackfillDetail({
           </Text>
         </FlexContainer>,
         <Text
-          danger={BackfillStatusEnum.CANCELLED === status || BackfillStatusEnum.FAILED == status}
-          default={BackfillStatusEnum.INITIAL === status}
+          {...getRunStatusTextProps(status)}
           key="backfill_status"
-          monospace
-          muted={!status}
-          success={BackfillStatusEnum.RUNNING === status || BackfillStatusEnum.COMPLETED === status}
         >
           {status || 'inactive'}
         </Text>,
@@ -300,10 +307,7 @@ function BackfillDetail({
             monospace
             small
           >
-            {displayLocalTimezone
-              ? datetimeInLocalTimezone(startDatetime, displayLocalTimezone)
-              : getTimeInUTCString(startDatetime)
-            }
+            {displayLocalOrUtcTime(startDatetime, displayLocalTimezone)}
           </Text>,
         ],
         [
@@ -322,10 +326,7 @@ function BackfillDetail({
             monospace
             small
           >
-            {displayLocalTimezone
-              ? datetimeInLocalTimezone(endDatetime, displayLocalTimezone)
-              : getTimeInUTCString(endDatetime)
-            }
+            {displayLocalOrUtcTime(endDatetime, displayLocalTimezone)}
           </Text>,
         ],
         [
@@ -374,6 +375,13 @@ function BackfillDetail({
             <Text default>
               Total runs
             </Text>
+            <Spacing mr={1} />
+            <Tooltip
+              default
+              label="This count does not include retries."
+              size={ICON_SIZE_DEFAULT}
+              widthFitContent
+            />
           </FlexContainer>,
           <Text
             key="total_runs"
@@ -404,17 +412,23 @@ function BackfillDetail({
 
   const modelVariables = useMemo(() => modelVariablesInit || {}, [modelVariablesInit]);
   const variablesTable = useMemo(() => {
-    let arr = [];
+    const arr = getFormattedVariables(variables, block => block.uuid === GLOBAL_VARIABLES_UUID) || [];
 
     if (!isEmptyObject(modelVariables)) {
       Object.entries(modelVariables).forEach(([k, v]) => {
-        arr.push({
-          uuid: k,
-          value: getFormattedVariable(v),
-        });
+        const currentVarIdx = arr.findIndex((pipelineVar: VariableType) => pipelineVar?.uuid === k);
+        if (currentVarIdx !== -1) {
+          arr.splice(currentVarIdx, 1, {
+            uuid: k,
+            value: getFormattedVariable(v),
+          });
+        } else {
+          arr.push({
+            uuid: k,
+            value: getFormattedVariable(v),
+          });
+        }
       });
-    } else {
-      arr = getFormattedVariables(variables, block => block.uuid === GLOBAL_VARIABLES_UUID);
     }
 
     if (typeof arr === 'undefined' || !arr?.length) {
@@ -566,65 +580,61 @@ function BackfillDetail({
               </>
             )}
 
-            {!isViewerRole &&
-              <>
-                {status === RunStatus.COMPLETED
-                  ?
-                    <Text bold default large>
-                      Filter runs by status:
-                    </Text>
-                  :
-                    <Button
-                      linkProps={{
-                        as: `/pipelines/${pipelineUUID}/backfills/${modelID}/edit`,
-                        href: '/pipelines/[pipeline]/backfills/[...slug]',
-                      }}
-                      noHoverUnderline
-                      outline
-                      sameColorAsText
-                    >
-                      Edit backfill
-                    </Button>
-                }
-
-                <Spacing mr={PADDING_UNITS} />
-              </>
+            {(!isViewerRole && !startedAt) &&
+              <Button
+                linkProps={{
+                  as: `/pipelines/${pipelineUUID}/backfills/${modelID}/edit`,
+                  href: '/pipelines/[pipeline]/backfills/[...slug]',
+                }}
+                noHoverUnderline
+                outline
+                sameColorAsText
+                title="Backfills cannot be edited once they've been started."
+              >
+                Edit backfill
+              </Button>
             }
 
             {!showPreviewRuns &&
-              <Select
-                compact
-                defaultColor
-                onChange={e => {
-                  e.preventDefault();
-                  const updatedStatus = e.target.value;
-                  if (updatedStatus === 'all') {
-                    router.push(
-                      '/pipelines/[pipeline]/backfills/[...slug]',
-                      `/pipelines/${pipelineUUID}/backfills/${modelID}`,
-                    );
-                  } else {
-                    goToWithQuery(
-                      {
-                        page: 0,
-                        status: e.target.value,
-                      },
-                    );
-                  }
-                }}
-                paddingRight={UNIT * 4}
-                placeholder="Select run status"
-                value={q?.status || 'all'}
-              >
-                <option key="all_statuses" value="all">
-                  All statuses
-                </option>
-                {PIPELINE_RUN_STATUSES.map(status => (
-                  <option key={status} value={status}>
-                    {RUN_STATUS_TO_LABEL[status]}
+              <>
+                <Text bold default large>
+                  Filter runs by status:
+                </Text>
+                <Spacing mr={PADDING_UNITS} />
+                <Select
+                  compact
+                  defaultColor
+                  onChange={e => {
+                    e.preventDefault();
+                    const updatedStatus = e.target.value;
+                    if (updatedStatus === 'all') {
+                      router.push(
+                        '/pipelines/[pipeline]/backfills/[...slug]',
+                        `/pipelines/${pipelineUUID}/backfills/${modelID}`,
+                      );
+                    } else {
+                      goToWithQuery(
+                        {
+                          page: 0,
+                          status: e.target.value,
+                        },
+                      );
+                    }
+                  }}
+                  paddingRight={UNIT * 4}
+                  placeholder="Select run status"
+                  value={q?.status || 'all'}
+                >
+                  <option key="all_statuses" value="all">
+                    All statuses
                   </option>
-                ))}
-              </Select>
+                  {PIPELINE_RUN_STATUSES.map(status => (
+                    <option key={status} value={status}>
+                      {RUN_STATUS_TO_LABEL[status]}
+                    </option>
+                  ))}
+                </Select>
+              </>
             }
           </FlexContainer>
         )}

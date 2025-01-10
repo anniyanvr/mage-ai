@@ -1,23 +1,29 @@
-import React, {
-  useEffect,
-  useMemo,
-  useRef,
-} from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import App, { AppProps } from 'next/app';
 import Cookies from 'js-cookie';
 import LoadingBar from 'react-top-loading-bar';
 import dynamic from 'next/dynamic';
+import { GoogleAnalytics } from '@next/third-parties/google';
 import { GridThemeProvider } from 'styled-bootstrap-grid';
 import { ThemeProvider } from 'styled-components';
+import { createRoot } from 'react-dom/client';
 
 import 'react-toastify/dist/ReactToastify.min.css';
 import '@styles/globals.css';
+import '@styles/scss/main.scss';
+import '@styles/scss/themes/dark.scss';
+import '@styles/scss/themes/light.scss';
 import AuthToken from '@api/utils/AuthToken';
+import CommandCenter from '@components/CommandCenter';
 import Head from '@oracle/elements/Head';
 import KeyboardContext from '@context/Keyboard';
 import ToastWrapper from '@components/Toast/ToastWrapper';
 import api from '@api';
 import useGlobalKeyboardShortcuts from '@utils/hooks/keyboardShortcuts/useGlobalKeyboardShortcuts';
+import useProject from '@utils/models/project/useProject';
+import useStatus from '@utils/models/status/useStatus';
+import { CustomEventUUID } from '@utils/events/constants';
+import { DEMO_GA_MEASUREMENT_ID } from '@utils/gtag';
 import { ErrorProvider } from '@context/Error';
 import { LOCAL_STORAGE_KEY_HIDE_PUBLIC_DEMO_WARNING } from '@storage/constants';
 import { ModalProvider } from '@context/Modal';
@@ -32,12 +38,15 @@ import {
 } from '@utils/session';
 import { SheetProvider } from '@context/Sheet/SheetProvider';
 import { ThemeType } from '@oracle/styles/themes/constants';
+import { addPageHistory } from '@storage/CommandCenter/utils';
 import { getCurrentTheme } from '@oracle/styles/themes/utils';
-import {
-  gridTheme as gridThemeDefault,
-  theme as stylesTheme,
-} from '@styles/theme';
+import { gridTheme as gridThemeDefault, theme as stylesTheme } from '@styles/theme';
+import { isDemo } from '@utils/environment';
 import { queryFromUrl, queryString, redirectToUrl } from '@utils/url';
+
+const NextAppV2 = dynamic(() => import('@components/NextAppV2'));
+
+const COMMAND_CENTER_ROOT_ID = 'command-center-root';
 
 const Banner = dynamic(() => import('@oracle/components/Banner'), { ssr: false });
 
@@ -46,37 +55,57 @@ type AppInternalProps = {
   themeProps?: {
     currentTheme?: any;
   };
+  themeSettings?: Record<string, any>;
   title?: string;
-  version: number;
+  version?: string;
 };
 
 type MyAppProps = {
   currentTheme: ThemeType;
   pageProps: AppInternalProps;
   router: any;
+  version?: string;
 };
 
 function MyApp(props: MyAppProps & AppProps) {
+  const commandCenterRootRef = useRef(null);
   const refLoadingBar = useRef(null);
   const keyMapping = useRef({});
   const keyHistory = useRef([]);
 
-  const {
-    Component,
-    currentTheme,
-    pageProps,
-    router,
-  } = props;
-  const {
-    defaultTitle,
-    themeProps = {},
-    title,
-    version = 1,
-  } = pageProps;
+  const { Component, currentTheme, pageProps, router } = props;
+  const { defaultTitle, themeProps = {}, title } = pageProps;
+
+  const { featureEnabled, featureUUIDs } = useProject();
+  const commandCenterEnabled = useMemo(
+    () => featureEnabled?.(featureUUIDs?.COMMAND_CENTER),
+    [featureEnabled, featureUUIDs],
+  );
+
+  const windowIsDefined = typeof window !== 'undefined';
+  const isDemoApp = useMemo(() => isDemo(), []);
+
+  const savePageHistory = useCallback(() => {
+    if (commandCenterEnabled) {
+      if (typeof document !== 'undefined') {
+        addPageHistory({
+          path: router?.asPath,
+          pathname: router?.pathname,
+          query: router?.query,
+          title: document?.title,
+        });
+      }
+    }
+  }, [commandCenterEnabled, router]);
+
+  useEffect(() => {
+    setTimeout(() => savePageHistory(), 3000);
+  }, [savePageHistory]);
 
   useEffect(() => {
     const handleRouteChangeComplete = (url: URL) => {
       refLoadingBar?.current?.complete?.();
+      savePageHistory();
     };
 
     const handleRouteChangeStart = () => {
@@ -94,11 +123,48 @@ function MyApp(props: MyAppProps & AppProps) {
       router.events.off('routeChangeStart', handleRouteChangeStart);
       router.events.off('routeChangeComplete', handleRouteChangeComplete);
     };
-  }, [
-    keyHistory,
-    keyMapping,
-    router.events,
-  ]);
+  }, [keyHistory, keyMapping, router.events, savePageHistory]);
+
+  useEffect(() => {
+    const handleState = () => {
+      if (!commandCenterRootRef?.current) {
+        const domNode = document.getElementById(COMMAND_CENTER_ROOT_ID);
+        commandCenterRootRef.current = createRoot(domNode);
+      }
+      if (commandCenterRootRef?.current) {
+        commandCenterRootRef?.current?.render(
+          <KeyboardContext.Provider value={keyboardContextValue}>
+            <ThemeProvider
+              theme={Object.assign(stylesTheme, themeProps?.currentTheme || currentTheme)}
+            >
+              <GridThemeProvider gridTheme={gridThemeDefault}>
+                <ModalProvider>
+                  <SheetProvider>
+                    <ErrorProvider>
+                      <CommandCenter router={router} />
+                    </ErrorProvider>
+                  </SheetProvider>
+                </ModalProvider>
+              </GridThemeProvider>
+            </ThemeProvider>
+          </KeyboardContext.Provider>,
+        );
+      }
+    };
+
+    if (typeof window !== 'undefined') {
+      // @ts-ignore
+      window.addEventListener(CustomEventUUID.COMMAND_CENTER_ENABLED, handleState);
+    }
+
+    return () => {
+      if (typeof window !== 'undefined') {
+        // @ts-ignore
+        window.removeEventListener(CustomEventUUID.COMMAND_CENTER_ENABLED, handleState);
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const {
     disableGlobalKeyboardShortcuts,
@@ -108,81 +174,79 @@ function MyApp(props: MyAppProps & AppProps) {
     unregisterOnKeyDown,
     unregisterOnKeyUp,
   } = useGlobalKeyboardShortcuts(keyMapping, keyHistory);
-  const keyboardContextValue = useMemo(() => ({
-    disableGlobalKeyboardShortcuts,
-    registerOnKeyDown,
-    registerOnKeyUp,
-    setDisableGlobalKeyboardShortcuts,
-    unregisterOnKeyDown,
-    unregisterOnKeyUp,
-  }), [
-    disableGlobalKeyboardShortcuts,
-    registerOnKeyDown,
-    registerOnKeyUp,
-    setDisableGlobalKeyboardShortcuts,
-    unregisterOnKeyDown,
-    unregisterOnKeyUp,
-  ]);
-
-  const windowIsDefined = typeof window !== 'undefined';
-  const isDemoApp = useMemo(() =>
-    windowIsDefined && window.location.hostname === 'demo.mage.ai',
-    [windowIsDefined],
+  const keyboardContextValue = useMemo(
+    () => ({
+      disableGlobalKeyboardShortcuts,
+      registerOnKeyDown,
+      registerOnKeyUp,
+      setDisableGlobalKeyboardShortcuts,
+      unregisterOnKeyDown,
+      unregisterOnKeyUp,
+    }),
+    [
+      disableGlobalKeyboardShortcuts,
+      registerOnKeyDown,
+      registerOnKeyUp,
+      setDisableGlobalKeyboardShortcuts,
+      unregisterOnKeyDown,
+      unregisterOnKeyUp,
+    ],
   );
 
   const val = Cookies.get(
     REQUIRE_USER_AUTHENTICATION_COOKIE_KEY,
-    REQUIRE_USER_AUTHENTICATION_COOKIE_PROPERTIES,
   );
   const noValue = typeof val === 'undefined' || val === null || !REQUIRE_USER_AUTHENTICATION();
 
   const valPermissions = Cookies.get(
     REQUIRE_USER_PERMISSIONS_COOKIE_KEY,
-    REQUIRE_USER_PERMISSIONS_COOKIE_PROPERTIES,
   );
-  const noValuePermissions = typeof valPermissions === 'undefined'
-    || valPermissions === null
-    || !REQUIRE_USER_PERMISSIONS();
+  const noValuePermissions =
+    typeof valPermissions === 'undefined' || valPermissions === null || !REQUIRE_USER_PERMISSIONS();
 
-  const { data } = api.statuses.list({}, {}, { pauseFetch: !noValue && !noValuePermissions });
+  const { status } = useStatus({
+    delay: 3000,
+    pauseFetch: !noValue && !noValuePermissions,
+  });
 
-  const requireUserAuthentication =
-    useMemo(() => data?.statuses?.[0]?.require_user_authentication, [data]);
-  const requireUserPermissions =
-    useMemo(() => data?.statuses?.[0]?.require_user_permissions, [data]);
+  const requireUserAuthentication = useMemo(() => status?.require_user_authentication, [status]);
+  const requireUserPermissions = useMemo(() => status?.require_user_permissions, [status]);
 
   const { data: dataProjects } = api.projects.list({}, { revalidateOnFocus: false });
 
   useEffect(() => {
-    if (noValue &&
+    if (
+      noValue &&
       typeof requireUserAuthentication !== 'undefined' &&
       requireUserAuthentication !== null
     ) {
       Cookies.set(
         REQUIRE_USER_AUTHENTICATION_COOKIE_KEY,
-        requireUserAuthentication,
+        String(requireUserAuthentication),
         REQUIRE_USER_AUTHENTICATION_COOKIE_PROPERTIES,
       );
     }
 
-    if (noValuePermissions &&
+    if (
+      noValuePermissions &&
       typeof requireUserPermissions !== 'undefined' &&
       requireUserPermissions !== null
     ) {
       Cookies.set(
         REQUIRE_USER_PERMISSIONS_COOKIE_KEY,
-        requireUserPermissions,
+        String(requireUserPermissions),
         REQUIRE_USER_PERMISSIONS_COOKIE_PROPERTIES,
       );
     }
 
     const loggedIn = AuthToken.isLoggedIn();
     if ((requireUserAuthentication && !loggedIn) || dataProjects?.error?.code === 401) {
-      const currentPath = windowIsDefined ? window.location.pathname : null;
-      if ('/sign-in' !== currentPath) {
+      const path = windowIsDefined ? window.location.pathname : null;
+      const currentPath = path && path.split('/').pop();
+      if ('sign-in' !== currentPath && 'oauth' !== currentPath) {
         const query = {
           ...queryFromUrl(),
-          redirect_url: currentPath,
+          redirect_url: path,
         };
         redirectToUrl(`/sign-in?${queryString(query)}`);
       }
@@ -196,57 +260,86 @@ function MyApp(props: MyAppProps & AppProps) {
     windowIsDefined,
   ]);
 
+  const shouldShowCommandCenter = useMemo(
+    () => (!requireUserAuthentication || AuthToken.isLoggedIn()) && commandCenterEnabled,
+    [commandCenterEnabled, requireUserAuthentication],
+  );
+
+  const appMemo = useMemo(
+    () => (
+      <NextAppV2
+        Component={Component}
+        pageProps={{
+          defaultTitle,
+          themeSettings: pageProps?.themeSettings,
+          title,
+          version: (props?.version || props?.pageProps?.version) as any,
+        }}
+        router={router}
+      />
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  const useV2 = useMemo(
+    () => props?.version === 'v2' || props?.pageProps?.version === 'v2',
+    [props?.version, props?.pageProps?.version],
+  );
+
+  if (useV2) {
+    return appMemo;
+  }
+
   return (
-    <KeyboardContext.Provider value={keyboardContextValue}>
-      <ThemeProvider
-        theme={Object.assign(
-          stylesTheme,
-          themeProps?.currentTheme || currentTheme,
-        )}
-      >
-        <GridThemeProvider gridTheme={gridThemeDefault}>
-          <ModalProvider>
-            <SheetProvider>
-              <ErrorProvider>
-                <Head
-                  defaultTitle={defaultTitle}
-                  title={title}
-                >
-                  <meta
-                    content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=0"
-                    name="viewport"
-                  />
-                </Head>
+    <>
+      <KeyboardContext.Provider value={keyboardContextValue}>
+        <ThemeProvider theme={Object.assign(stylesTheme, themeProps?.currentTheme || currentTheme)}>
+          <GridThemeProvider gridTheme={gridThemeDefault}>
+            <ModalProvider>
+              <SheetProvider>
+                <ErrorProvider>
+                  <Head defaultTitle={defaultTitle} title={title}>
+                    <meta
+                      content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=0"
+                      name="viewport"
+                    />
+                  </Head>
 
-                <LoadingBar color={RED} ref={refLoadingBar} />
+                  <LoadingBar color={RED} ref={refLoadingBar} />
 
-                {/* @ts-ignore */}
-                <Component {...pageProps} />
+                  {/* @ts-ignore */}
+                  <Component {...pageProps} />
 
-                {isDemoApp && (
-                  <Banner
-                    linkProps={{
-                      href: 'https://github.com/mage-ai/mage-ai',
-                      label: 'GET MAGE',
-                    }}
-                    localStorageHideKey={LOCAL_STORAGE_KEY_HIDE_PUBLIC_DEMO_WARNING}
-                    textProps={{
-                      message: 'Public demo. Do not add private credentials.',
-                      warning: true,
-                    }}
-                  />
-                )}
-              </ErrorProvider>
-            </SheetProvider>
-          </ModalProvider>
-        </GridThemeProvider>
-        <ToastWrapper />
-      </ThemeProvider>
-    </KeyboardContext.Provider>
+                  {isDemoApp && (
+                    <Banner
+                      linkProps={{
+                        href: 'https://github.com/mage-ai/mage-ai',
+                        label: 'GET MAGE',
+                      }}
+                      localStorageHideKey={LOCAL_STORAGE_KEY_HIDE_PUBLIC_DEMO_WARNING}
+                      textProps={{
+                        message: 'Public demo. Do not add private credentials.',
+                        warning: true,
+                      }}
+                    />
+                  )}
+                  {shouldShowCommandCenter && <CommandCenter />}
+                  {!shouldShowCommandCenter && <div id={COMMAND_CENTER_ROOT_ID} />}
+                </ErrorProvider>
+              </SheetProvider>
+            </ModalProvider>
+          </GridThemeProvider>
+          <ToastWrapper />
+        </ThemeProvider>
+      </KeyboardContext.Provider>
+
+      {isDemoApp && <GoogleAnalytics gaId={DEMO_GA_MEASUREMENT_ID} />}
+    </>
   );
 }
 
-MyApp.getInitialProps = async (appContext) => {
+MyApp.getInitialProps = async appContext => {
   const appProps = await App.getInitialProps(appContext);
   const { ctx } = appContext;
 

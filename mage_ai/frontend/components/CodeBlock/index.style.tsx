@@ -24,6 +24,7 @@ import {
 } from '@oracle/styles/colors/gradients';
 import { ThemeType } from '@oracle/styles/themes/constants';
 import { UNIT } from '@oracle/styles/units/spacing';
+import { hideScrollBar } from '@oracle/styles/scrollbars';
 import { transition } from '@oracle/styles/mixins';
 
 // Look at the code editor div class "margin" and role "presentation"
@@ -75,10 +76,12 @@ export function getColorsForBlockType(
   },
 ): {
   accent?: string;
+  accentDark?: string;
   accentLight?: string;
 } {
-  let accent = (props?.theme?.borders || dark.borders).light;
+  let accent = (props?.theme || dark)?.content?.muted;
   let accentLight = (props?.theme?.monotone || dark.monotone).grey500;
+  let accentDark;
   const { blockColor, isSelected, theme } = props || {};
 
   if (isSelected) {
@@ -105,6 +108,7 @@ export function getColorsForBlockType(
   } else if (BlockTypeEnum.DBT === blockType) {
     accent = (theme || dark).accent.dbt;
     accentLight = (theme || dark).accent.dbtLight;
+    accentDark = (theme || dark).accent.dbtDark;
   } else if (BlockTypeEnum.EXTENSION === blockType || blockColor === BlockColorEnum.TEAL) {
     accent = (theme?.accent || dark.accent).teal;
     accentLight = (theme?.accent || dark.accent).tealLight;
@@ -119,7 +123,10 @@ export function getColorsForBlockType(
     || (BlockTypeEnum.CUSTOM === blockType && !blockColor)) {
     accent = (theme || dark).content.default;
     accentLight = (theme || dark).accent.contentDefaultTransparent;
-  } else if (BlockTypeEnum.GLOBAL_DATA_PRODUCT === blockType && !blockColor) {
+  } else if ([
+    BlockTypeEnum.CHART,
+    BlockTypeEnum.GLOBAL_DATA_PRODUCT,
+  ].includes(blockType) && !blockColor) {
     accent = (theme || dark).monotone.white;
     accentLight = (theme || dark).monotone.whiteTransparent;
   }
@@ -127,6 +134,7 @@ export function getColorsForBlockType(
   return {
     accent,
     accentLight,
+    accentDark,
   };
 }
 
@@ -166,6 +174,20 @@ export const BORDER_COLOR_SHARED_STYLES = css<BorderColorShareProps>`
   `}
 `;
 
+export const CodeBlockV1WrapperStyle = styled.div`
+  &.disable-border-radius {
+    .code-block-header-sticky {
+      border-top-left-radius: 0px !important;
+      border-top-right-radius: 0px !important;
+    }
+ }
+
+  .code-block-header-sticky {
+    border-top-left-radius: ${BORDER_RADIUS}px;
+    border-top-right-radius: ${BORDER_RADIUS}px;
+  }
+`;
+
 export const ContainerStyle = styled.div`
   border-radius: ${BORDER_RADIUS}px;
   position: relative;
@@ -199,15 +221,12 @@ export const BlockHeaderStyle = styled.div<{
 } & BorderColorShareProps>`
   ${BORDER_COLOR_SHARED_STYLES}
 
-  border-top-left-radius: ${BORDER_RADIUS}px;
-  border-top-right-radius: ${BORDER_RADIUS}px;
   border-top-style: ${BORDER_STYLE};
   border-top-width: ${BORDER_WIDTH_THICK}px;
   border-left-style: ${BORDER_STYLE};
   border-left-width: ${BORDER_WIDTH_THICK}px;
   border-right-style: ${BORDER_STYLE};
   border-right-width: ${BORDER_WIDTH_THICK}px;
-  padding: ${UNIT}px;
 
   ${props => `
     background-color: ${(props.theme || dark).background.dashboard};
@@ -221,7 +240,14 @@ export const BlockHeaderStyle = styled.div<{
     // This is to hide the horizontal scrollbar in the block header when sideBySide is enabled,
     // and the screen width is too small.
     position: sticky;
-    top: -5px;
+    top: 0px;
+  `}
+
+  ${props => props.noSticky && `
+    ${hideScrollBar()}
+
+    overflow-x: auto;
+    overflow-y: visible;
   `}
 `;
 
@@ -273,6 +299,7 @@ export const CodeContainerStyle = styled.div<{
     border-bottom-right-radius: ${BORDER_RADIUS}px;
     border-bottom-style: ${BORDER_STYLE};
     border-bottom-width: ${BORDER_WIDTH_THICK}px;
+    overflow: hidden;
   `}
 
   .line-numbers {
@@ -365,9 +392,14 @@ export const TimeTrackerStyle =  styled.div`
   position: absolute;
 `;
 
-export const ScrollColunnsContainerStyle = styled.div`
+export const ScrollColunnsContainerStyle = styled.div<{
+  zIndex?: number;
+}>`
   position: relative;
-  z-index: 1;
+
+  ${props => `
+    z-index: ${props?.zIndex || 1};
+  `}
 `;
 
 export const ScrollColunnStyle = styled.div.attrs(({

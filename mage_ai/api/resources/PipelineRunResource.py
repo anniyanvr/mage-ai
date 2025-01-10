@@ -1,12 +1,22 @@
+from sqlalchemy import and_, desc, func
 from sqlalchemy.orm import selectinload
 
 from mage_ai.api.operations.constants import META_KEY_LIMIT, META_KEY_OFFSET
 from mage_ai.api.resources.DatabaseResource import DatabaseResource
 from mage_ai.api.utils import get_query_timestamps
 from mage_ai.cache.tag import TagCache
-from mage_ai.data_preparation.models.constants import PipelineType
+from mage_ai.data_preparation.models.block.utils import get_all_descendants
+from mage_ai.data_preparation.models.constants import (
+    PIPELINE_RUN_STATUS_LAST_RUN_FAILED,
+    PipelineType,
+)
 from mage_ai.data_preparation.models.pipeline import Pipeline
-from mage_ai.orchestration.db import safe_db_query
+from mage_ai.data_preparation.models.triggers import (
+    ScheduleInterval,
+    ScheduleStatus,
+    ScheduleType,
+)
+from mage_ai.orchestration.db import db_connection, safe_db_query
 from mage_ai.orchestration.db.models.schedules import (
     BlockRun,
     PipelineRun,
@@ -88,10 +98,45 @@ class PipelineRunResource(DatabaseResource):
 
         repo_pipeline_schedule_ids = [s.id for s in PipelineSchedule.repo_query]
 
+        include_all_pipeline_schedules = query_arg.get('include_all_pipeline_schedules', [None])
+        if include_all_pipeline_schedules:
+            include_all_pipeline_schedules = include_all_pipeline_schedules[0]
+
+        if status == PIPELINE_RUN_STATUS_LAST_RUN_FAILED:
+            """
+            The initial query below is used to get the last pipeline run retry
+            (or individual pipeline run if there are no retries) for each
+            grouping of pipeline runs with the same execution_date,
+            pipeline_uuid, and pipeline_schedule_id.
+            """
+            latest_pipeline_runs = PipelineRun.select(
+                PipelineRun.id,
+                func.row_number()
+                    .over(
+                        partition_by=(
+                            PipelineRun.execution_date,
+                            PipelineRun.pipeline_schedule_id,
+                            PipelineRun.pipeline_uuid,
+                        ),
+                        order_by=desc(PipelineRun.id))
+                    .label('row_number')
+            ).cte(name='latest_pipeline_runs')
+            query = (PipelineRun.select(
+                    PipelineRun,
+                )
+                .join(latest_pipeline_runs, and_(
+                    PipelineRun.id == latest_pipeline_runs.c.id,
+                    latest_pipeline_runs.c.row_number == 1,
+                ))
+            )
+        else:
+            query = PipelineRun.query
+
+        if not include_all_pipeline_schedules:
+            query = query.filter(PipelineRun.pipeline_schedule_id.in_(repo_pipeline_schedule_ids))
+
         results = (
-            PipelineRun
-            .query
-            .filter(PipelineRun.pipeline_schedule_id.in_(repo_pipeline_schedule_ids))
+            query
             .options(selectinload(PipelineRun.block_runs))
             .options(selectinload(PipelineRun.pipeline_schedule))
             .join(PipelineSchedule, PipelineRun.pipeline_schedule_id == PipelineSchedule.id)
@@ -114,14 +159,24 @@ class PipelineRunResource(DatabaseResource):
             results = results.filter(PipelineRun.pipeline_uuid.in_(pipeline_uuids))
         if pipeline_uuids_with_tags:
             results = results.filter(PipelineRun.pipeline_uuid.in_(pipeline_uuids_with_tags))
-        if status is not None:
+
+        if status == PIPELINE_RUN_STATUS_LAST_RUN_FAILED:
+            results = results.filter(PipelineRun.status == PipelineRun.PipelineRunStatus.FAILED)
+        elif status is not None:
             results = results.filter(PipelineRun.status == status)
+
         if statuses:
             results = results.filter(PipelineRun.status.in_(statuses))
         if start_timestamp is not None:
             results = results.filter(PipelineRun.created_at >= start_timestamp)
         if end_timestamp is not None:
             results = results.filter(PipelineRun.created_at <= end_timestamp)
+
+        limit = int((meta or {}).get(META_KEY_LIMIT, self.DEFAULT_LIMIT))
+
+        # No need to order the results if limit is 0
+        if limit == 0:
+            return results
 
         if order_by:
             arr = []
@@ -140,6 +195,7 @@ class PipelineRunResource(DatabaseResource):
     @classmethod
     @safe_db_query
     async def process_collection(self, query_arg, meta, user, **kwargs):
+        context_data = kwargs.get('context_data')
         total_results = await self.collection(query_arg, meta, user, **kwargs)
         total_count = total_results.count()
 
@@ -198,8 +254,7 @@ class PipelineRunResource(DatabaseResource):
         query arg and set it to True (e.g. in order to make the number of pipeline runs
         returned consistent across pages).
         """
-        if (meta or {}).get(META_KEY_LIMIT, None) is not None and \
-            total_results.count() >= 1 and \
+        if limit is not None and limit != 0 and total_count >= 1 and \
             not disable_retries_grouping and \
                 (pipeline_uuid is not None or pipeline_schedule_id is not None):
 
@@ -230,6 +285,15 @@ class PipelineRunResource(DatabaseResource):
         has_next = results_size > limit
         final_end_idx = results_size - 1 if has_next else results_size
 
+        # Expire pipeline runs that are in progress so that the latest status is returned
+        # the next time they are fetched.
+        for run in results:
+            if run.status in (
+                PipelineRun.PipelineRunStatus.RUNNING,
+                PipelineRun.PipelineRunStatus.INITIAL,
+            ):
+                db_connection.session.expire(run)
+
         result_set = self.build_result_set(
             results[0:final_end_idx],
             user,
@@ -242,7 +306,11 @@ class PipelineRunResource(DatabaseResource):
         }
 
         if include_pipeline_uuids:
-            pipeline_uuids = Pipeline.get_all_pipelines(get_repo_path())
+            repo_path = get_repo_path(context_data=context_data, user=user)
+            pipeline_uuids = Pipeline.get_all_pipelines_all_projects(
+                context_data=context_data,
+                repo_path=repo_path,
+            )
             result_set.metadata['pipeline_uuids'] = pipeline_uuids
 
         return result_set
@@ -252,20 +320,34 @@ class PipelineRunResource(DatabaseResource):
     def create(self, payload, user, **kwargs):
         pipeline_schedule = kwargs.get('parent_model')
 
-        pipeline = Pipeline.get(pipeline_schedule.pipeline_uuid)
+        repo_path = get_repo_path(user=user)
+        pipeline = Pipeline.get(pipeline_schedule.pipeline_uuid, repo_path=repo_path)
         configured_payload, _ = configure_pipeline_run_payload(
             pipeline_schedule,
             pipeline.type,
             payload,
         )
 
+        def _create_callback(resource):
+            schedule = PipelineSchedule.get(
+                resource.pipeline_schedule_id,
+            )
+            if schedule and \
+                schedule.status == ScheduleStatus.INACTIVE and \
+                schedule.schedule_type == ScheduleType.TIME and \
+                    schedule.schedule_interval == ScheduleInterval.ONCE:
+                schedule.update(status=ScheduleStatus.ACTIVE)
+
+        self.on_create_callback = _create_callback
+
         return super().create(configured_payload, user, **kwargs)
 
     @safe_db_query
     def update(self, payload, **kwargs):
+        repo_path = get_repo_path(user=self.current_user)
         if 'retry_blocks' == payload.get('pipeline_run_action'):
             self.model.refresh()
-            pipeline = Pipeline.get(self.model.pipeline_uuid)
+            pipeline = Pipeline.get(self.model.pipeline_uuid, repo_path=repo_path)
             block_runs_to_retry = []
             from_block_uuid = payload.get('from_block_uuid')
             if from_block_uuid is not None:
@@ -273,25 +355,15 @@ class PipelineRunResource(DatabaseResource):
                 if is_integration:
                     from_block = pipeline.block_from_block_uuid_with_stream(from_block_uuid)
                 else:
-                    from_block = pipeline.blocks_by_uuid.get(from_block_uuid)
+                    from_block = pipeline.get_block(from_block_uuid)
 
                 if from_block:
-                    downstream_blocks = from_block.get_all_downstream_blocks()
-                    if is_integration:
-                        block_uuid_suffix = from_block_uuid[len(from_block.uuid):]
-                        downstream_block_uuids = [from_block_uuid] + \
-                            [f'{b.uuid}{block_uuid_suffix}' for b in downstream_blocks]
-                    else:
-                        downstream_block_uuids = [from_block_uuid] + \
-                            [b.uuid for b in downstream_blocks]
-
-                    block_runs_to_retry = \
-                        list(
-                            filter(
-                                lambda br: br.block_uuid in downstream_block_uuids,
-                                self.model.block_runs
-                            )
-                        )
+                    descendants = [b.uuid for b in get_all_descendants(from_block)]
+                    block_runs_to_retry = []
+                    for block_run in self.model.block_runs:
+                        block2 = pipeline.get_block(block_run.block_uuid)
+                        if block2.uuid in descendants or block2.uuid == from_block.uuid:
+                            block_runs_to_retry.append(block_run)
             elif PipelineRun.PipelineRunStatus.COMPLETED != self.model.status:
                 block_runs_to_retry = \
                     list(
@@ -326,6 +398,7 @@ class PipelineRunResource(DatabaseResource):
             pipeline = Pipeline.get(
                 self.model.pipeline_uuid,
                 check_if_exists=True,
+                repo_path=repo_path,
             )
 
             stop_pipeline_run(self.model, pipeline)

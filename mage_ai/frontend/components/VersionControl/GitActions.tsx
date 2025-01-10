@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import useWebSocket from 'react-use-websocket';
 import { useMutation } from 'react-query';
+import { useRouter } from 'next/router';
 
-import AuthToken from '@api/utils/AuthToken';
 import Button from '@oracle/elements/Button';
 import Checkbox from '@oracle/elements/Checkbox';
 import FlexContainer from '@oracle/components/FlexContainer';
@@ -22,7 +22,6 @@ import {
   PanelStyle,
   TerminalStyle,
 } from './GitActions.style';
-import { OAUTH2_APPLICATION_CLIENT_ID } from '@api/constants';
 import { getWebSocket } from '@api/utils/url';
 import { onSuccess } from '@api/utils/response';
 import { remove } from '@utils/array';
@@ -46,6 +45,7 @@ function GitActions({
   branch,
   fetchBranch,
 }: GitActionsProps) {
+  const router = useRouter();
   const [payload, setPayload] = useState<any>();
   const [confirmMessage, setConfirmMessage] = useState<string>();
   const [action, setAction] = useState<string>();
@@ -55,10 +55,11 @@ function GitActions({
 
   const {
     data: dataAllGitBranches,
+    isValidating,
     mutate: fetchAllBranches,
-  } = api.git_custom_branches.list();
+  } = api.git_branches.list({ include_remote_branches: 1 });
   const allBranches = useMemo(
-    () => dataAllGitBranches?.['git_custom_branches'],
+    () => dataAllGitBranches?.['git_branches'],
     [dataAllGitBranches],
   );
 
@@ -92,7 +93,7 @@ function GitActions({
   );
 
   const [getStatus] = useMutation(
-    () => api.git_branches.useUpdate(branch)({ git_branch: { action_type: 'status' } }),
+    () => api.git_branches.useUpdate(encodeURIComponent(branch))({ git_branch: { action_type: 'status' } }),
     {
       onSuccess: (response: any) => onSuccess(
         response, {
@@ -109,7 +110,7 @@ function GitActions({
   );
 
   const [performAction, { isLoading: isLoadingPerformAction }] = useMutation(
-    api.git_branches.useUpdate(branch),
+    api.git_branches.useUpdate(encodeURIComponent(branch)),
     {
       onSuccess: (response: any) => onSuccess(
         response, {
@@ -133,7 +134,7 @@ function GitActions({
     performActionWithRefresh,
     { isLoading: isLoadingPerformActionWithRefresh },
   ] = useMutation(
-    api.git_branches.useUpdate(branch),
+    api.git_branches.useUpdate(encodeURIComponent(branch)),
     {
       onSuccess: (response: any) => onSuccess(
         response, {
@@ -181,9 +182,13 @@ function GitActions({
     ],
   );
 
-  useEffect(() => updateStatus(), [action, updateStatus]);
+  useEffect(() => {
+    if (!isValidating) {
+      updateStatus();
+    }
+  }, [action, isValidating, updateStatus]);
   
-  const user = useMemo(() => getUser() || {}, []);
+  const user = useMemo(() => getUser(router?.basePath) || {}, [router?.basePath]);
   const sharedWebsocketData = useMemo(() => {
     const params = {
       term_name: user?.id ? `git_${user?.id}` : 'git',
@@ -298,7 +303,7 @@ function GitActions({
                       git_branch: {
                         action_type: 'commit',
                         ...payload,
-                      }
+                      },
                     }).then(() => {
                       updateStatus();
                       setPayload(null);
@@ -487,6 +492,7 @@ function GitActions({
                 switchBranch({
                   git_branch: {
                     name: e.target.value,
+                    remote: 'mage-repo',
                   },
                 });
               }}

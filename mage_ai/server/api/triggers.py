@@ -43,11 +43,14 @@ class ApiTriggerPipelineHandler(BaseHandler):
                     continue
                 payload['event_variables'][k] = v
 
-        pipeline = Pipeline.get(pipeline_schedule.pipeline_uuid)
+        pipeline = Pipeline.get(
+            pipeline_schedule.pipeline_uuid, repo_path=pipeline_schedule.repo_path
+        )
         pipeline_run = create_and_start_pipeline_run(
             pipeline,
             pipeline_schedule,
             payload,
+            should_schedule=False,
         )
 
         self.write(dict(pipeline_run=pipeline_run.to_dict()))

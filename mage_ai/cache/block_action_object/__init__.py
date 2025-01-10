@@ -35,7 +35,12 @@ from mage_ai.data_preparation.templates.constants import (
 from mage_ai.data_preparation.templates.data_integrations.utils import (
     get_templates as get_templates_for_data_integrations,
 )
-from mage_ai.settings.repo import get_repo_path
+from mage_ai.settings.platform import (
+    build_repo_path_for_all_projects,
+    project_platform_activated,
+)
+from mage_ai.settings.utils import base_repo_path
+from mage_ai.shared.path_fixer import remove_base_repo_path
 from mage_ai.shared.strings import remove_extension_from_filename
 
 
@@ -44,7 +49,8 @@ def parse_block_file_absolute_path(block_file_absolute_path: str) -> Dict:
     file_directory_name = Block.file_directory_name(block_type)
 
     # This is the block_file_absolute_path without the repo_path
-    file_path = str(block_file_absolute_path).replace(get_repo_path(), '')
+    file_path = str(block_file_absolute_path)
+    file_path = remove_base_repo_path(str(block_file_absolute_path))
     if file_path.startswith(os.sep):
         file_path = file_path[1:]
 
@@ -78,10 +84,14 @@ class BlockActionObjectCache(BaseCache):
     cache_key = CACHE_KEY_BLOCK_ACTION_OBJECTS_MAPPING
 
     @classmethod
-    async def initialize_cache(self, replace: bool = False) -> 'BlockActionObjectCache':
+    async def initialize_cache(
+        self,
+        project: Project = None,
+        replace: bool = False,
+    ) -> 'BlockActionObjectCache':
         cache = self()
         if replace or not cache.exists():
-            await cache.initialize_cache_for_all_objects()
+            await cache.initialize_cache_for_all_objects(project=project)
 
         return cache
 
@@ -151,7 +161,11 @@ class BlockActionObjectCache(BaseCache):
         if block:
             block_type = block.type
             file_path = os.path.join(block.file.dir_path, block.file.filename)
-            filename = os.path.join(*file_path.split(os.path.sep)[1:])
+            parts = file_path.split(os.path.sep)[1:]
+            if len(parts) == 0:
+                return
+
+            filename = os.path.join(*parts)
             language = block.language
             uuid = block.uuid
         else:
@@ -223,21 +237,43 @@ class BlockActionObjectCache(BaseCache):
 
         self.set(self.cache_key, mapping)
 
-    async def initialize_cache_for_all_objects(self) -> None:
+    async def initialize_cache_for_all_objects(self, project=None) -> None:
+        """
+        Initializes a cache for various types of objects across all projects.
+
+        This method populates a mapping dictionary with cached data for different types of objects,
+        including mage templates, custom block templates, and block files, from all projects.
+
+        - `OBJECT_TYPE_BLOCK_FILE`: Cache for block files.
+        - `OBJECT_TYPE_CUSTOM_BLOCK_TEMPLATE`: Cache for custom block templates.
+        - `OBJECT_TYPE_MAGE_TEMPLATE`: Cache for mage templates.
+
+        The caching process includes fetching templates relevant to all projects,
+        processing custom block templates from a directory,
+        and gathering data for block files from all projects' directories.
+
+        The cache is constructed and stored using the `set` method.
+
+        Returns:
+            None: This method does not return any value, it updates the cache for all objects.
+        """
         mapping = {
             OBJECT_TYPE_BLOCK_FILE: {},
             OBJECT_TYPE_CUSTOM_BLOCK_TEMPLATE: {},
             OBJECT_TYPE_MAGE_TEMPLATE: {},
         }
 
+        # Cache Mage templates
         mage_templates = TEMPLATES + TEMPLATES_ONLY_FOR_V2
-        if Project().is_feature_enabled(FeatureUUID.DATA_INTEGRATION_IN_BATCH_PIPELINE):
+        project = project or Project()
+        if project.is_feature_enabled(FeatureUUID.DATA_INTEGRATION_IN_BATCH_PIPELINE):
             mage_templates += get_templates_for_data_integrations()
 
         for block_action_object in mage_templates:
             key = self.build_key_for_mage_template(block_action_object)
             mapping[OBJECT_TYPE_MAGE_TEMPLATE][key] = block_action_object
 
+        # Cache custom block templates
         file_dicts = get_templates(DIRECTORY_FOR_BLOCK_TEMPLATES)
         file_dicts_flat = flatten_files(file_dicts)
         custom_block_templates = group_and_hydrate_files(file_dicts_flat, CustomBlockTemplate)
@@ -248,45 +284,53 @@ class BlockActionObjectCache(BaseCache):
                 include_content=True,
             )
 
-        for block_type in BlockType:
-            file_directory_name = Block.file_directory_name(block_type)
-            directory_full_path = os.path.join(get_repo_path(), file_directory_name)
+        # Cache block files
+        paths_to_traverse = [dict(full_path=base_repo_path())]
+        if project_platform_activated():
+            paths_to_traverse = build_repo_path_for_all_projects(mage_projects_only=True).values()
 
-            for path in Path(directory_full_path).rglob('*'):
-                if not path.is_file():
-                    continue
+        for path_dict in paths_to_traverse:
+            repo_path = path_dict['full_path']
 
-                block_file_absolute_path = path.absolute()
-                d = parse_block_file_absolute_path(block_file_absolute_path)
+            for block_type in BlockType:
+                file_directory_name = Block.file_directory_name(block_type)
+                directory_full_path = os.path.join(repo_path, file_directory_name)
 
-                file_path = d.get('file_path')
-                filename = d.get('filename')
-                filename_parts = d.get('filename_parts')
-                language = d.get('language')
+                for path in Path(directory_full_path).rglob('*'):
+                    if not path.is_file():
+                        continue
 
-                if '__init__.py' == filename:
-                    continue
+                    block_file_absolute_path = path.absolute()
+                    d = parse_block_file_absolute_path(block_file_absolute_path)
 
-                if not language:
-                    continue
+                    file_path = d.get('file_path')
+                    filename = d.get('filename')
+                    filename_parts = d.get('filename_parts')
+                    language = d.get('language')
 
-                key = self.build_key_for_block_file(
-                    file_path,
-                    block_type,
-                    language,
-                    filename,
-                )
+                    if '__init__.py' == filename:
+                        continue
 
-                content = None
-                with open(block_file_absolute_path, 'r') as f:
-                    content = f.read()
+                    if not language:
+                        continue
 
-                mapping[OBJECT_TYPE_BLOCK_FILE][key] = dict(
-                    content=content,
-                    file_path=file_path,
-                    language=language,
-                    type=block_type,
-                    uuid='.'.join(filename_parts[:-1]),
-                )
+                    key = self.build_key_for_block_file(
+                        file_path,
+                        block_type,
+                        language,
+                        filename,
+                    )
+
+                    content = None
+                    with open(block_file_absolute_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+
+                    mapping[OBJECT_TYPE_BLOCK_FILE][key] = dict(
+                        content=content,
+                        file_path=file_path,
+                        language=language,
+                        type=block_type,
+                        uuid='.'.join(filename_parts[:-1]),
+                    )
 
         self.set(self.cache_key, mapping)

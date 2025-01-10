@@ -5,14 +5,15 @@ import { useRouter } from 'next/router';
 
 import Button from '@oracle/elements/Button';
 import ClickOutside from '@oracle/components/ClickOutside';
+import DisableTriggerModal from './DisableTriggerModal';
 import FlexContainer from '@oracle/components/FlexContainer';
 import Link from '@oracle/elements/Link';
-import PipelineType from '@interfaces/PipelineType';
 import PipelineScheduleType, {
   SCHEDULE_TYPE_TO_LABEL,
   ScheduleStatusEnum,
 } from '@interfaces/PipelineScheduleType';
 import PipelineTriggerType from '@interfaces/PipelineTriggerType';
+import PipelineType from '@interfaces/PipelineType';
 import PopupMenu from '@oracle/components/PopupMenu';
 import Spacing from '@oracle/elements/Spacing';
 import Table from '@components/shared/Table';
@@ -21,6 +22,8 @@ import Text from '@oracle/elements/Text';
 import ToggleSwitch from '@oracle/elements/Inputs/ToggleSwitch';
 import Tooltip from '@oracle/components/Tooltip';
 import api from '@api';
+import useProject from '@utils/models/project/useProject';
+import useStatus from '@utils/models/status/useStatus';
 import {
   Code,
   Edit,
@@ -33,6 +36,7 @@ import {
   DELETE_CONFIRM_TOP_OFFSET_DIFF,
   DELETE_CONFIRM_TOP_OFFSET_DIFF_FIRST,
   TIMEZONE_TOOLTIP_PROPS,
+  getRunStatusTextProps,
 } from '@components/shared/Table/constants';
 import { ICON_SIZE_SMALL } from '@oracle/styles/units/icons';
 import { RunStatus } from '@interfaces/BlockRunType';
@@ -47,6 +51,7 @@ import { isViewer } from '@utils/session';
 import { onSuccess } from '@api/utils/response';
 import { pauseEvent } from '@utils/events';
 import { shouldDisplayLocalTimezone } from '@components/settings/workspace/utils';
+import { useModal } from '@context/Modal';
 
 const ICON_SIZE = UNIT * 1.5;
 
@@ -83,6 +88,11 @@ function TriggersTable({
 }: TriggersTableProps) {
   const pipelineUUID = pipeline?.uuid;
   const router = useRouter();
+
+  const { projectPlatformActivated } = useProject();
+  const { status: statusProject } = useStatus();
+
+  const toggleTriggerRefs = useRef({});
   const deleteButtonRefs = useRef({});
   const [deleteConfirmationOpenIdx, setDeleteConfirmationOpenIdx] = useState<number>(null);
   const [confirmDialogueTopOffset, setConfirmDialogueTopOffset] = useState<number>(0);
@@ -90,6 +100,24 @@ function TriggersTable({
 
   const displayLocalTimezone = shouldDisplayLocalTimezone();
   const timezoneTooltipProps = displayLocalTimezone ? TIMEZONE_TOOLTIP_PROPS : {};
+
+  const [updatePipeline]: any = useMutation(
+    (pipeline: PipelineType) =>
+      api.pipelines.useUpdate(pipeline.uuid)({ pipeline }),
+    {
+      onSuccess: (response: any) => onSuccess(
+        response, {
+          callback: () => {
+            fetchPipelineSchedules?.();
+          },
+          onErrorCallback: (response, errors) => setErrors?.({
+            errors,
+            response,
+          }),
+        },
+      ),
+    },
+  );
 
   const [updatePipelineSchedule] = useMutation(
     (pipelineSchedule: PipelineScheduleType) =>
@@ -102,7 +130,7 @@ function TriggersTable({
           callback: () => {
             fetchPipelineSchedules?.();
           },
-          onErrorCallback: (response, errors) => setErrors({
+          onErrorCallback: (response, errors) => setErrors?.({
             errors,
             response,
           }),
@@ -140,21 +168,70 @@ function TriggersTable({
   const columns = [];
 
   if (!disableActions) {
-    columnFlex.push(...[null, null]);
+    columnFlex.push(...[null]);
     columns.push(...[
       {
         uuid: 'Active',
       },
+    ]);
+  }
+
+  columnFlex.push(...[1]);
+  columns.push(...[
+    {
+      uuid: 'Name',
+    },
+  ]);
+
+  if (!disableActions) {
+    columnFlex.push(...[null]);
+    columns.push(...[
+      {
+        center: true,
+        uuid: 'Logs',
+      },
+    ]);
+
+    if (projectPlatformActivated) {
+      columnFlex.push(...[null]);
+      columns.push(...[
+        {
+          uuid: 'Project',
+        },
+      ]);
+    }
+
+    if (includePipelineColumn) {
+      columnFlex.push(...[1]);
+      columns.push(...[
+        {
+          uuid: 'Pipeline',
+        },
+      ]);
+    }
+
+    columnFlex.push(...[null, null]);
+    columns.push(...[
       {
         uuid: 'Type',
+      },
+      {
+        uuid: 'Frequency',
       },
     ]);
   }
 
-  columnFlex.push(...[1, 2]);
+  columnFlex.push(...[1, 1,  null, null]);
   columns.push(...[
     {
-      uuid: 'Name',
+      uuid: 'Latest status',
+    },
+    {
+      ...timezoneTooltipProps,
+      uuid: 'Next run date',
+    },
+    {
+      uuid: 'Runs',
     },
     {
       uuid: 'Description',
@@ -162,54 +239,97 @@ function TriggersTable({
   ]);
 
   if (!disableActions) {
-    columnFlex.push(...[null]);
-    columns.push({
-      uuid: 'Frequency',
-    });
-  }
-
-  columnFlex.push(...[1, 1,  null]);
-  columns.push(...[
-    {
-      ...timezoneTooltipProps,
-      uuid: 'Next run date',
-    },
-    {
-      uuid: 'Latest status',
-    },
-    {
-      uuid: 'Runs',
-    },
-  ]);
-
-  if (!disableActions) {
     columnFlex.push(...[1]);
-    columns.push({
-      uuid: 'Tags',
-    });
+    columns.push(...[
+      {
+        uuid: 'Tags',
+      },
+    ]);
+
+    if (includeCreatedAtColumn) {
+      columnFlex.push(...[null]);
+      columns.push(...[
+        {
+          ...timezoneTooltipProps,
+          uuid: 'Created at',
+        },
+      ]);
+    }
+
+    if (!isViewer(router?.basePath)) {
+      columnFlex.push(...[null]);
+      columns.push(...[
+        {
+          label: () => '',
+          uuid: 'edit/delete',
+        },
+      ]);
+    }
   }
 
-  columnFlex.push(...[null]);
-  columns.push({
-    uuid: 'Logs',
+  const [showDisableTriggerModal, hideDisableTriggerModal] = useModal(({
+    inProgressRunsCount,
+    left,
+    pipelineScheduleId,
+    pipelineUuid,
+    top,
+    topOffset,
+  }) => (
+    <DisableTriggerModal
+      inProgressRunsCount={inProgressRunsCount}
+      left={left}
+      onAllow={(pipelineScheduleId) => {
+        hideDisableTriggerModal();
+        updatePipelineSchedule({
+          id: pipelineScheduleId,
+          status: ScheduleStatusEnum.INACTIVE,
+        });
+      }}
+      onStop={(pipelineScheduleId, pipelineUuid) => {
+        hideDisableTriggerModal();
+        // Cancel all in progress runs
+        updatePipeline({
+          pipeline_schedule_id: pipelineScheduleId,
+          status: RunStatus.CANCELLED,
+          uuid: pipelineUuid,
+        });
+        updatePipelineSchedule({
+          id: pipelineScheduleId,
+          status: ScheduleStatusEnum.INACTIVE,
+        });
+      }}
+      pipelineScheduleId={pipelineScheduleId}
+      pipelineUuid={pipelineUuid}
+      top={top}
+      topOffset={topOffset}
+    />
+  ), {
+  }, [], {
+    background: true,
+    uuid: 'disable_trigger',
   });
 
-  if (!disableActions && !isViewer()) {
-    columnFlex.push(...[null]);
-    columns.push({
-      label: () => '',
-      uuid: 'edit/delete',
-    });
-  }
-
-  if (!disableActions && includePipelineColumn) {
-    columns.splice(2, 0, { uuid: 'Pipeline' });
-    columnFlex.splice(2, 0, 1);
-  }
-  if (!disableActions && includeCreatedAtColumn) {
-    columns.splice(5, 0, { ...timezoneTooltipProps, uuid: 'Created at' });
-    columnFlex.splice(5, 0, null);
-  }
+  const handleTogglePipeline = ({
+    event,
+    inProgressRunsCount,
+    pipelineIsActive,
+    pipelineScheduleId,
+    pipelineUuid,
+  }) => {
+    pauseEvent(event);
+    if (pipelineIsActive && inProgressRunsCount > 0) {
+      const toggleEl = toggleTriggerRefs.current[pipelineScheduleId]?.current as Element;
+      const { height, left, top } = toggleEl?.getBoundingClientRect();
+      showDisableTriggerModal({ inProgressRunsCount, left, pipelineScheduleId, pipelineUuid, top, topOffset: height });
+    } else {
+      updatePipelineSchedule({
+        id: pipelineScheduleId,
+        status: pipelineIsActive
+          ? ScheduleStatusEnum.INACTIVE
+          : ScheduleStatusEnum.ACTIVE,
+      });
+    }
+  };
 
   return (
     <TableContainerStyle overflowVisible>
@@ -240,10 +360,12 @@ function TriggersTable({
                 created_at: createdAt,
                 description,
                 next_pipeline_run_date: nextRunDate,
+                pipeline_in_progress_runs_count: inProgressRunsCount,
                 pipeline_runs_count: pipelineRunsCount,
                 pipeline_uuid: triggerPipelineUUID,
                 last_pipeline_run_status: lastPipelineRunStatus,
                 name,
+                repo_path: repoPath,
                 schedule_interval: scheduleInterval,
                 status,
                 tags,
@@ -251,6 +373,7 @@ function TriggersTable({
               const isActive = ScheduleStatusEnum.ACTIVE === status;
               const isCustomInterval = checkIfCustomInterval(scheduleInterval);
               const finalPipelineUUID = pipelineUUID || triggerPipelineUUID;
+              toggleTriggerRefs.current[id] = createRef();
               deleteButtonRefs.current[id] = createRef();
 
               const triggerAsCodeIcon = pipelineTriggersByName?.[name]
@@ -283,28 +406,21 @@ function TriggersTable({
                     size={20}
                     widthFitContent
                   >
-                    <ToggleSwitch
-                      checked={isActive}
-                      compact
-                      onCheck={(e) => {
-                        pauseEvent(e);
-                        updatePipelineSchedule({
-                          id: pipelineSchedule.id,
-                          status: isActive
-                            ? ScheduleStatusEnum.INACTIVE
-                            : ScheduleStatusEnum.ACTIVE,
-                        });
-                      }}
-                      purpleBackground
-                    />
+                    <div ref={toggleTriggerRefs.current[id]} style={{ position: 'relative' }}>
+                      <ToggleSwitch
+                        checked={isActive}
+                        compact
+                        onCheck={(event) => handleTogglePipeline({
+                          event,
+                          inProgressRunsCount,
+                          pipelineIsActive: isActive,
+                          pipelineScheduleId: id,
+                          pipelineUuid: triggerPipelineUUID,
+                        })}
+                        purpleBackground
+                      />
+                    </div>
                   </Tooltip>,
-                  <Text
-                    default
-                    key={`trigger_type_${idx}`}
-                    monospace
-                  >
-                    {SCHEDULE_TYPE_TO_LABEL[pipelineSchedule.schedule_type]?.()}
-                  </Text>,
                   <FlexContainer
                     alignItems="center"
                     key={`trigger_name_${idx}`}
@@ -345,27 +461,69 @@ function TriggersTable({
                 ]);
               }
 
-              rows.push(...[
-                <Text
-                  default
-                  key={`trigger_description_${idx}`}
-                >
-                  {description}
-                </Text>,
-              ]);
-
               if (!disableActions) {
                 rows.push(
+                  <Button
+                    default
+                    iconOnly
+                    key={`logs_button_${idx}`}
+                    noBackground
+                    onClick={() => router.push(
+                      `/pipelines/${finalPipelineUUID}/logs?pipeline_schedule_id[]=${id}`,
+                    )}
+                  >
+                    <Logs default size={ICON_SIZE_SMALL} />
+                  </Button>,
+                );
+
+                if (projectPlatformActivated) {
+                  rows.push(...[
+                    <Text
+                      default
+                      key={`project_${idx}`}
+                      monospace
+                    >
+                      {repoPath?.replace(statusProject?.repo_path_root || '', '')?.slice(1)}
+                    </Text>,
+                  ]);
+                }
+
+                if (includePipelineColumn) {
+                  rows.push(
+                    <Text
+                      default
+                      key={`pipeline_name_${idx}`}
+                      monospace
+                    >
+                      {finalPipelineUUID}
+                    </Text>,
+                  );
+                }
+
+                rows.push(...[
+                  <Text
+                    default
+                    key={`trigger_type_${idx}`}
+                    monospace
+                  >
+                    {SCHEDULE_TYPE_TO_LABEL[pipelineSchedule.schedule_type]?.()}
+                  </Text>,
                   <Text default key={`trigger_frequency_${idx}`} monospace>
                     {(displayLocalTimezone && isCustomInterval)
                       ? convertUtcCronExpressionToLocalTimezone(scheduleInterval)
                       : scheduleInterval
                     }
                   </Text>,
-                );
+                ]);
               }
 
               rows.push(...[
+                <Text
+                  {...getRunStatusTextProps(lastPipelineRunStatus)}
+                  key={`latest_run_status_${idx}`}
+                >
+                  {lastPipelineRunStatus || '—'}
+                </Text>,
                 <Text
                   key={`trigger_next_run_date_${idx}`}
                   monospace
@@ -384,18 +542,16 @@ function TriggersTable({
                     )
                   }
                 </Text>,
-                <Text
-                  danger={RunStatus.FAILED === lastPipelineRunStatus}
-                  default={!lastPipelineRunStatus}
-                  key={`latest_run_status_${idx}`}
-                  monospace
-                  success={RunStatus.COMPLETED === lastPipelineRunStatus}
-                  warning={RunStatus.CANCELLED === lastPipelineRunStatus}
-                >
-                  {lastPipelineRunStatus || 'N/A'}
-                </Text>,
                 <Text default key={`trigger_run_count_${idx}`} monospace>
-                  {pipelineRunsCount}
+                  {pipelineRunsCount || '0'}
+                </Text>,
+                <Text
+                  default
+                  key={`trigger_description_${idx}`}
+                  title={description}
+                  width={UNIT * 40}
+                >
+                  {description}
                 </Text>,
               ]);
 
@@ -407,99 +563,70 @@ function TriggersTable({
                     />
                   </div>,
                 );
-              }
 
-              rows.push(
-                <Button
-                  default
-                  iconOnly
-                  key={`logs_button_${idx}`}
-                  noBackground
-                  onClick={() => router.push(
-                    `/pipelines/${finalPipelineUUID}/logs?pipeline_schedule_id[]=${id}`,
-                  )}
-                >
-                  <Logs default size={ICON_SIZE_SMALL} />
-                </Button>,
-              );
+                if (includeCreatedAtColumn) {
+                  rows.push(
+                    <Text
+                      default
+                      key={`created_at_${idx}`}
+                      monospace
+                      small
+                      title={createdAt ? utcStringToElapsedTime(createdAt) : null}
+                    >
+                      {datetimeInLocalTimezone(createdAt?.slice(0, 19), displayLocalTimezone)}
+                    </Text>,
+                  );
+                }
 
-              if (!disableActions && !isViewer()) {
-                rows.push(
-                  <FlexContainer key={`edit_delete_buttons_${idx}`}>
-                    <Button
-                      default
-                      iconOnly
-                      noBackground
-                      onClick={() => router.push(`/pipelines/${finalPipelineUUID}/triggers/${id}/edit`)}
-                      title="Edit"
-                    >
-                      <Edit default size={ICON_SIZE_SMALL} />
-                    </Button>
-                    <Spacing mr={1} />
-                    <Button
-                      default
-                      iconOnly
-                      noBackground
-                      onClick={() => {
-                        setDeleteConfirmationOpenIdx(id);
-                        setConfirmDialogueTopOffset(deleteButtonRefs.current[id]?.current?.offsetTop || 0);
-                        setConfirmDialogueLeftOffset(deleteButtonRefs.current[id]?.current?.offsetLeft || 0);
-                      }}
-                      ref={deleteButtonRefs.current[id]}
-                      title="Delete"
-                    >
-                      <Trash default size={ICON_SIZE_SMALL} />
-                    </Button>
-                    <ClickOutside
-                      onClickOutside={() => setDeleteConfirmationOpenIdx(null)}
-                      open={deleteConfirmationOpenIdx === id}
-                    >
-                      <PopupMenu
-                        danger
-                        left={(confirmDialogueLeftOffset || 0) - DELETE_CONFIRM_LEFT_OFFSET_DIFF}
-                        onCancel={() => setDeleteConfirmationOpenIdx(null)}
+                if (!isViewer(router?.basePath)) {
+                  rows.push(
+                    <FlexContainer key={`edit_delete_buttons_${idx}`}>
+                      <Button
+                        default
+                        iconOnly
+                        noBackground
+                        onClick={() => router.push(`/pipelines/${finalPipelineUUID}/triggers/${id}/edit`)}
+                        title="Edit"
+                      >
+                        <Edit default size={ICON_SIZE_SMALL} />
+                      </Button>
+                      <Spacing mr={1} />
+                      <Button
+                        default
+                        iconOnly
+                        noBackground
                         onClick={() => {
-                          setDeleteConfirmationOpenIdx(null);
-                          deletePipelineTrigger(id);
+                          setDeleteConfirmationOpenIdx(id);
+                          setConfirmDialogueTopOffset(deleteButtonRefs.current[id]?.current?.offsetTop || 0);
+                          setConfirmDialogueLeftOffset(deleteButtonRefs.current[id]?.current?.offsetLeft || 0);
                         }}
-                        title={`Are you sure you want to delete the trigger ${name}?`}
-                        top={(confirmDialogueTopOffset || 0)
-                          - (idx <= 1 ? DELETE_CONFIRM_TOP_OFFSET_DIFF_FIRST : DELETE_CONFIRM_TOP_OFFSET_DIFF)
-                        }
-                        width={DELETE_CONFIRM_WIDTH}
-                      />
-                    </ClickOutside>
-                  </FlexContainer>,
-                );
-              }
-
-              if (!disableActions && includePipelineColumn) {
-                rows.splice(
-                  2,
-                  0,
-                  <Text
-                    default
-                    key={`pipeline_name_${idx}`}
-                    monospace
-                  >
-                    {finalPipelineUUID}
-                  </Text>,
-                );
-              }
-              if (!disableActions && includeCreatedAtColumn) {
-                rows.splice(
-                  5,
-                  0,
-                  <Text
-                    default
-                    key={`created_at_${idx}`}
-                    monospace
-                    small
-                    title={createdAt ? utcStringToElapsedTime(createdAt) : null}
-                  >
-                    {datetimeInLocalTimezone(createdAt?.slice(0, 19), displayLocalTimezone)}
-                  </Text>,
-                );
+                        ref={deleteButtonRefs.current[id]}
+                        title="Delete"
+                      >
+                        <Trash default size={ICON_SIZE_SMALL} />
+                      </Button>
+                      <ClickOutside
+                        onClickOutside={() => setDeleteConfirmationOpenIdx(null)}
+                        open={deleteConfirmationOpenIdx === id}
+                      >
+                        <PopupMenu
+                          danger
+                          left={(confirmDialogueLeftOffset || 0) - DELETE_CONFIRM_LEFT_OFFSET_DIFF}
+                          onCancel={() => setDeleteConfirmationOpenIdx(null)}
+                          onClick={() => {
+                            setDeleteConfirmationOpenIdx(null);
+                            deletePipelineTrigger(id);
+                          }}
+                          title={`Are you sure you want to delete the trigger ${name}?`}
+                          top={(confirmDialogueTopOffset || 0)
+                            - (idx <= 1 ? DELETE_CONFIRM_TOP_OFFSET_DIFF_FIRST : DELETE_CONFIRM_TOP_OFFSET_DIFF)
+                          }
+                          width={DELETE_CONFIRM_WIDTH}
+                        />
+                      </ClickOutside>
+                    </FlexContainer>,
+                  );
+                }
               }
 
               return rows;

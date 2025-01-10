@@ -1,7 +1,9 @@
 import os
-from unittest.mock import call, patch
+from unittest.mock import ANY, call, patch
 
-from mage_ai.data_preparation.models.block.global_data_product import GlobalDataProductBlock
+from mage_ai.data_preparation.models.block.global_data_product import (
+    GlobalDataProductBlock,
+)
 from mage_ai.data_preparation.models.constants import BlockType
 from mage_ai.data_preparation.models.global_data_product import GlobalDataProduct
 from mage_ai.data_preparation.models.pipeline import Pipeline
@@ -18,7 +20,7 @@ class GlobalDataProductBlockTest(DBTestCase):
                 repo_path=self.repo_path,
             )
         except Exception:
-            self.pipeline = Pipeline.get('test_pipeline')
+            self.pipeline = Pipeline.get('test_pipeline', repo_path=self.repo_path)
 
         self.block = GlobalDataProductBlock(
             'GDP',
@@ -40,6 +42,7 @@ class GlobalDataProductBlockTest(DBTestCase):
             object_uuid=self.pipeline.uuid,
             outdated_after=dict(months=1),
             outdated_starting_at=dict(day_of_month=1),
+            repo_path=self.repo_path,
             settings=dict(data_loader=dict(partitions=1)),
             uuid='mage',
         )
@@ -48,7 +51,7 @@ class GlobalDataProductBlockTest(DBTestCase):
             self.repo_path,
             'global_data_products.yaml',
         )
-        self.global_data_product.save(file_path=self.file_path)
+        self.global_data_product.save()
 
     def tearDown(self):
         super().tearDown()
@@ -64,5 +67,14 @@ class GlobalDataProductBlockTest(DBTestCase):
     def test_execute_block(self, mock_trigger_and_check_status):
         self.block.execute_block(global_vars=dict(variables=dict(mage=3)))
         mock_trigger_and_check_status.assert_has_calls([
-            call(self.block.get_global_data_product(), dict(mage=3)),
+            call(
+                self.block.get_global_data_product(),
+                block=self.block,
+                from_notebook=False,
+                logger=ANY,
+                logging_tags=ANY,
+                poll_interval=30,
+                remote_blocks=None,
+                variables=dict(mage=3),
+            ),
         ])

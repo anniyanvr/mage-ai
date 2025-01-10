@@ -1,6 +1,6 @@
 import { DndProvider } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation } from 'react-query';
 
 import BlockCubeGradient from '@oracle/icons/custom/BlockCubeGradient';
@@ -15,7 +15,7 @@ import BlockType, {
 import Button from '@oracle/elements/Button';
 import CodeBlock from '@components/CodeBlock';
 import Flex from '@oracle/components/Flex';
-import FlexContainer from '@oracle/components/FlexContainer';
+import FlexContainer, { JUSTIFY_SPACE_BETWEEN_PROPS } from '@oracle/components/FlexContainer';
 import KeyboardShortcutButton from '@oracle/elements/Button/KeyboardShortcutButton';
 import LLMType, { LLMUseCaseEnum } from '@interfaces/LLMType';
 import PipelineType, { PipelineTypeEnum } from '@interfaces/PipelineType';
@@ -37,13 +37,14 @@ import {
   RowStyle,
 } from './index.style';
 import { DataIntegrationTypeEnum, TemplateTypeEnum } from '@interfaces/BlockTemplateType';
+import { KEY_ENTER, KEY_ESCAPE } from '@utils/hooks/keyboardShortcuts/constants';
 import { ICON_SIZE_LARGE } from '@oracle/styles/units/icons';
 import { ObjectType } from '@interfaces/BlockActionObjectType';
 import {
   PADDING_UNITS,
   UNIT,
 } from '@oracle/styles/units/spacing';
-import { capitalize } from '@utils/string';
+import { capitalize, startsWithNumber } from '@utils/string';
 import { onSuccess } from '@api/utils/response';
 import { useError } from '@context/Error';
 
@@ -75,7 +76,7 @@ function ConfigureBlock({
   });
 
   // @ts-ignore
-  const sharedPipelinesCount = Object.keys(block?.pipelines || {}).length;
+  const sharedPipelinesCount = (block?.pipelines || [])?.length;
 
   const refTextInput = useRef(null);
   const [blockAttributes, setBlockAttributes] = useState<{
@@ -90,6 +91,42 @@ function ConfigureBlock({
     name: defaultName,
     type: block?.type,
   });
+
+  const blockNameStartsWithNumber = useMemo(() =>
+    !!blockAttributes?.name && startsWithNumber(blockAttributes?.name || ''),
+    [blockAttributes?.name],
+  );
+
+  const handleOnSave = useCallback(() => {
+    onSave({
+      ...blockAttributes,
+      name: blockAttributes?.name || defaultName,
+    });
+    onClose();
+  }, [blockAttributes, defaultName, onClose, onSave]);
+    
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      event.stopPropagation();
+      if (event.key === KEY_ESCAPE) {
+        onClose();
+      } else if (event.key === KEY_ENTER) {
+        const buttonText = event.target.innerText;
+        if (!buttonText.startsWith('Save and')
+          && buttonText !== 'Cancel'
+          && !blockNameStartsWithNumber
+        ) {
+          handleOnSave();
+        }
+      }
+    };
+
+    document?.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document?.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [blockNameStartsWithNumber, handleOnSave, onClose]);
 
   useEffect(() => {
     refTextInput?.current?.focus();
@@ -143,6 +180,7 @@ function ConfigureBlock({
           }) => {
             const {
               block_type: blockType,
+              code, // Raw code without block template
               configuration,
               content,
               language,
@@ -152,7 +190,7 @@ function ConfigureBlock({
               ...prev,
               block_action_object: null,
               configuration: configuration,
-              content,
+              content: content,
               language,
               type: blockType,
             }));
@@ -172,11 +210,19 @@ function ConfigureBlock({
     if (isGenerateBlock && generateBlockCommand && !llm) {
       // @ts-ignore
       createLLM({
+        // llm: {
+        //   request: {
+        //     block_description: generateBlockCommand,
+        //   },
+        //   use_case: LLMUseCaseEnum.GENERATE_CODE,
+        // },
         llm: {
           request: {
             block_description: generateBlockCommand,
+            block_type: BlockTypeEnum.TRANSFORMER,
+            code_language: BlockLanguageEnum.PYTHON,
           },
-          use_case: LLMUseCaseEnum.GENERATE_BLOCK_WITH_DESCRIPTION,
+          use_case: LLMUseCaseEnum.GENERATE_CODE,
         },
       });
     }
@@ -313,26 +359,34 @@ function ConfigureBlock({
         </RowStyle>
       )}
 
-      <RowStyle>
-        <Text default>
-          Name
-        </Text>
+      <RowStyle columnFlex>
+        <FlexContainer {...JUSTIFY_SPACE_BETWEEN_PROPS} fullWidth>
+          <Text default>
+            Name
+          </Text>
 
-        <TextInput
-          alignRight
-          fullWidth
-          noBackground
-          noBorder
-          // @ts-ignore
-          onChange={e => setBlockAttributes(prev => ({
-            ...prev,
-            name: e.target.value,
-          }))}
-          paddingVertical={UNIT}
-          placeholder="Block name..."
-          ref={refTextInput}
-          value={blockAttributes?.name || ''}
-        />
+          <TextInput
+            alignRight
+            fullWidth
+            noBackground
+            noBorder
+            // @ts-ignore
+            onChange={e => setBlockAttributes(prev => ({
+              ...prev,
+              name: e.target.value,
+            }))}
+            paddingVertical={UNIT}
+            placeholder="Block name..."
+            ref={refTextInput}
+            value={blockAttributes?.name || ''}
+          />
+        </FlexContainer>
+
+        {blockNameStartsWithNumber && (
+          <Text bold warning>
+            Note: Numbers are not allowed as the first character of a block name.
+          </Text>
+        )}
       </RowStyle>
 
       <RowStyle>
@@ -522,11 +576,8 @@ function ConfigureBlock({
           <KeyboardShortcutButton
             bold
             centerText
-            disabled={isLoadingCreateLLM}
-            onClick={() => onSave({
-              ...blockAttributes,
-              name: blockAttributes?.name || defaultName,
-            })}
+            disabled={isLoadingCreateLLM || blockNameStartsWithNumber}
+            onClick={handleOnSave}
             primary
             tabIndex={0}
             uuid="ConfigureBlock/SaveAndAddBlock"
@@ -537,7 +588,7 @@ function ConfigureBlock({
               : (isReplacingBlock
                 ? 'replace'
                 : 'add')
-            } block
+            }
           </KeyboardShortcutButton>
 
           <Spacing ml={1}>

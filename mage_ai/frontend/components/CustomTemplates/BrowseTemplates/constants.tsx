@@ -1,5 +1,4 @@
 import CustomTemplateType from '@interfaces/CustomTemplateType';
-import StreamingPipeline from '@oracle/icons/custom/StreamingPipeline';
 import {
   BLOCK_TYPE_NAME_MAPPING,
   BlockTypeEnum,
@@ -13,11 +12,12 @@ import {
   Conditional,
   CubeWithArrowDown,
   DBT,
-  DataIntegrationPipeline,
   File as FileIcon,
   FrameBoxSelection,
+  IntegrationPipeline,
   Lightning,
   Sensor,
+  StreamingPipeline,
   TemplateShapes,
 } from '@oracle/icons';
 import {
@@ -41,7 +41,10 @@ export const NAV_TABS = [
 
 export type NavLinkType = {
   Icon?: any;
-  label?: () => string;
+  description?: () => string | any;
+  label?: (opts?: {
+    [key: string]: any;
+  }) => string | any;
   filterTemplates?: (customTemplates: CustomTemplateType) => CustomTemplateType[];
   selectedBackgroundColor?: (theme: any) => string;
   selectedIconProps?: {
@@ -62,7 +65,7 @@ export const BLOCK_TYPE_ICON_MAPPING = {
   [BlockTypeEnum.MARKDOWN]: FileIcon,
   [BlockTypeEnum.SENSOR]: Sensor,
   [BlockTypeEnum.TRANSFORMER]: FrameBoxSelection,
-}
+};
 
 export const NAV_LINKS: NavLinkType[] = [
   {
@@ -146,7 +149,7 @@ export const NAV_LINKS_PIPELINES: NavLinkType[] = [
     uuid: PipelineTypeEnum.PYTHON,
   },
   {
-    Icon: DataIntegrationPipeline,
+    Icon: IntegrationPipeline,
     uuid: PipelineTypeEnum.INTEGRATION,
   },
   {

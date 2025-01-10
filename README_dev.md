@@ -91,7 +91,11 @@ Install additional dev dependencies from `pyproject.toml`:
 pip install $(python -c "import toml; print(' '.join(toml.load('pyproject.toml')['tool']['poetry']['group']['dev']['dependencies'].keys()))" | tr '\n' ' ')
 ```
 
-The above command uses the `toml` library to output the dev dependencies from the `pyproject.toml` as a space-delimited list, and passes that output to the `pip install` command.
+The above command uses the `toml` library to output the dev dependencies from the `pyproject.toml` as a space-delimited list, and passes that output to the `pip install` command. If you encounter the error: `ModuleNotFoundError: No module named 'toml'`, try running the following command instead:
+
+```bash
+pip install $(python3 -c "import toml; print(' '.join(toml.load('pyproject.toml')['tool']['poetry']['group']['dev']['dependencies'].keys()))" | tr '\n' ' ')
+```
 
 ## Mage frontend
 
@@ -180,3 +184,95 @@ List of builds:
 Some Python packages assume a few core functionalities that are not available on Windows, so you need to install these prerequisites, see the fantastic (but archived) [pipwin](https://github.com/lepisma/pipwin) and [this issue](https://github.com/lepisma/pipwin/issues/64) for more options.
 
 Please report any other build errors in our Slack.
+
+### ModuleNotFoundError: No module named 'x'
+
+If there were added new libraries you should manually handle new dependencies. It can be done in 2 ways:
+
+1. `docker-compose build` from project root will fully rebuild an image with new dependencies - it can take lots of time
+2. `pip install x` from inside the container will only install the required dependency - it should be much faster
+
+## Monaco Editor features
+
+If you want to exclude a feature from the WebPack build,
+you can do so by modifying the WebPack configuration:
+
+```js
+config.plugins.push(
+  new MonacoWebpackPlugin({
+    features: ['!anchorSelect'],
+  }),
+);
+```
+
+### Features
+
+Get list of features:
+
+```tsx
+import metadata from 'monaco-editor/esm/metadata';
+console.log(metadata.features);
+```
+
+```
+anchorSelect
+bracketMatching
+browser
+caretOperations
+clipboard
+codeAction
+codeEditor
+codelens
+colorPicker
+comment
+contextmenu
+cursorUndo
+diffEditor
+diffEditorBreadcrumbs
+dnd
+documentSymbols
+dropOrPasteInto
+find
+folding
+fontZoom
+format
+gotoError
+gotoLine
+gotoSymbol
+hover
+iPadShowKeyboard
+inPlaceReplace
+indentation
+inlayHints
+inlineCompletions
+inlineEdit
+inlineProgress
+inspectTokens
+lineSelection
+linesOperations
+linkedEditing
+links
+longLinesHelper
+multicursor
+parameterHints
+quickCommand
+quickHelp
+quickOutline
+readOnlyMessage
+referenceSearch
+rename
+sectionHeaders
+semanticTokens
+smartSelect
+snippet
+stickyScroll
+suggest
+toggleHighContrast
+toggleTabFocusMode
+tokenization
+unicodeHighlighter
+unusualLineTerminators
+wordHighlighter
+wordOperations
+wordPartOperations
+```

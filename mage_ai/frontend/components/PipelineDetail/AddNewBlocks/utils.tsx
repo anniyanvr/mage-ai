@@ -31,16 +31,21 @@ const getDataSourceTypes = (
   if (pipelineType === PipelineTypeEnum.STREAMING) {
     return {
       [BlockTypeEnum.DATA_LOADER]: [
+        DataSourceTypeEnum.GENERIC,
+        DataSourceTypeEnum.ACTIVEMQ,
         DataSourceTypeEnum.AMAZON_SQS,
         DataSourceTypeEnum.AZURE_EVENT_HUB,
         DataSourceTypeEnum.GOOGLE_CLOUD_PUBSUB,
         DataSourceTypeEnum.INFLUXDB,
         DataSourceTypeEnum.KAFKA,
+        DataSourceTypeEnum.NATS,
         DataSourceTypeEnum.KINESIS,
         DataSourceTypeEnum.RABBITMQ,
         DataSourceTypeEnum.MONGODB
       ],
       [BlockTypeEnum.DATA_EXPORTER]: [
+        DataSourceTypeEnum.GENERIC,
+        DataSourceTypeEnum.ACTIVEMQ,
         DataSourceTypeEnum.AZURE_DATA_LAKE,
         DataSourceTypeEnum.BIGQUERY,
         DataSourceTypeEnum.CLICKHOUSE,
@@ -48,6 +53,7 @@ const getDataSourceTypes = (
         DataSourceTypeEnum.DUMMY,
         DataSourceTypeEnum.ELASTICSEARCH,
         DataSourceTypeEnum.GOOGLE_CLOUD_PUBSUB,
+        DataSourceTypeEnum.GOOGLE_CLOUD_STORAGE,
         DataSourceTypeEnum.INFLUXDB,
         DataSourceTypeEnum.S3,
         DataSourceTypeEnum.KAFKA,
@@ -56,7 +62,9 @@ const getDataSourceTypes = (
         DataSourceTypeEnum.MSSQL,
         DataSourceTypeEnum.MYSQL,
         DataSourceTypeEnum.OPENSEARCH,
+        DataSourceTypeEnum.ORACLEDB,
         DataSourceTypeEnum.POSTGRES,
+        DataSourceTypeEnum.RABBITMQ,
         DataSourceTypeEnum.REDSHIFT,
         DataSourceTypeEnum.SNOWFLAKE,
         DataSourceTypeEnum.TRINO,
@@ -87,7 +95,7 @@ export const createDataSourceMenuItems = (
           config: {
             data_source: (sourceType === DataSourceTypeEnum.GENERIC) ? null : sourceType,
           },
-          language: requiresConfigFile
+          language: (requiresConfigFile && sourceType !== DataSourceTypeEnum.GENERIC)
             ? BlockLanguageEnum.YAML
             : BlockLanguageEnum.PYTHON,
           type: blockType,

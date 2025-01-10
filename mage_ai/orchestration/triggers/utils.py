@@ -1,8 +1,10 @@
 from datetime import datetime, timedelta
 from time import sleep
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Union
 
+from mage_ai.data_preparation.models.block.remote.models import RemoteBlock
 from mage_ai.data_preparation.models.pipeline import Pipeline
+from mage_ai.data_preparation.models.triggers import ScheduleStatus
 from mage_ai.orchestration.db import db_connection, safe_db_query
 from mage_ai.orchestration.db.models.schedules import PipelineRun, PipelineSchedule
 from mage_ai.orchestration.pipeline_scheduler import configure_pipeline_run_payload
@@ -27,6 +29,8 @@ def check_pipeline_run_status(
         if PipelineRun.PipelineRunStatus.FAILED.value == status:
             if error_on_failure:
                 raise Exception(message)
+            else:
+                break
 
         if verbose:
             print(message)
@@ -52,12 +56,36 @@ def check_pipeline_run_status(
     return pipeline_run
 
 
+def create_and_cancel_pipeline_run(
+    pipeline: Pipeline,
+    pipeline_schedule: PipelineSchedule,
+    payload: Dict,
+    message: str = None,
+) -> PipelineRun:
+    from mage_ai.orchestration.pipeline_scheduler import PipelineScheduler
+
+    payload_copy = payload.copy()
+    configured_payload, _ = configure_pipeline_run_payload(
+        pipeline_schedule,
+        pipeline.type,
+        payload_copy,
+    )
+    configured_payload['create_block_runs'] = False
+    pipeline_run = PipelineRun.create(**configured_payload)
+    if message:
+        pipeline_scheduler = PipelineScheduler(pipeline_run)
+        pipeline_scheduler.logger.warning(message, **pipeline_scheduler.build_tags())
+    pipeline_run.update(status=PipelineRun.PipelineRunStatus.CANCELLED)
+    return pipeline_run
+
+
 @safe_db_query
 def create_and_start_pipeline_run(
     pipeline: Pipeline,
     pipeline_schedule: PipelineSchedule,
     payload: Dict = None,
     should_schedule: bool = False,
+    remote_blocks: List[Union[Dict, RemoteBlock]] = None,
 ) -> PipelineRun:
     if payload is None:
         payload = {}
@@ -67,6 +95,13 @@ def create_and_start_pipeline_run(
         pipeline.type,
         payload,
     )
+
+    if remote_blocks:
+        variables = configured_payload.get('variables', {})
+        if variables.get('remote_blocks'):
+            remote_blocks = variables.get('remote_blocks', []) + remote_blocks
+        variables['remote_blocks'] = remote_blocks
+        configured_payload['variables'] = variables
 
     pipeline_run = PipelineRun.create(**configured_payload)
 
@@ -94,5 +129,8 @@ def create_and_start_pipeline_run(
                 )
             else:
                 raise err
+
+    if ScheduleStatus.ACTIVE != pipeline_schedule.status:
+        pipeline_schedule.update(status=ScheduleStatus.ACTIVE)
 
     return pipeline_run

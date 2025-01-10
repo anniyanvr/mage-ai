@@ -1,19 +1,25 @@
 import importlib
 import json
+import sys
+
+if sys.version_info >= (3, 12, 0):
+    import six
+    sys.modules['kafka.vendor.six.moves'] = six.moves
+
 import time
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Callable, Dict, List
 
-from kafka import KafkaConsumer
+from kafka import KafkaConsumer, TopicPartition
 
 from mage_ai.shared.config import BaseConfig
+from mage_ai.shared.enum import StrEnum
 from mage_ai.streaming.constants import DEFAULT_BATCH_SIZE, DEFAULT_TIMEOUT_MS
 from mage_ai.streaming.sources.base import BaseSource
 from mage_ai.streaming.sources.shared import SerDeConfig, SerializationMethod
 
 
-class SecurityProtocol(str, Enum):
+class SecurityProtocol(StrEnum):
     SASL_PLAINTEXT = 'SASL_PLAINTEXT'
     SASL_SSL = 'SASL_SSL'
     SSL = 'SSL'
@@ -42,6 +48,7 @@ class KafkaConfig(BaseConfig):
     api_version: str = '0.10.2'
     batch_size: int = DEFAULT_BATCH_SIZE
     timeout_ms: int = DEFAULT_TIMEOUT_MS
+    auto_offset_reset: str = 'latest'
     include_metadata: bool = False
     security_protocol: SecurityProtocol = None
     ssl_config: SSLConfig = None
@@ -49,6 +56,8 @@ class KafkaConfig(BaseConfig):
     serde_config: SerDeConfig = None
     topic: str = None
     topics: List = field(default_factory=list)
+    offset: Dict = None
+    max_partition_fetch_bytes: int = 1048576
 
     @classmethod
     def parse_config(self, config: Dict) -> Dict:
@@ -71,12 +80,17 @@ class KafkaSource(BaseSource):
         if not self.config.topic and not self.config.topics:
             raise Exception('Please specify topic or topics in the Kafka config.')
 
+        if self.config.offset and self.config.offset.get("partitions") is None:
+            raise Exception('Please specify topic partitions')
+
         self._print('Start initializing consumer.')
         # Initialize kafka consumer
         consumer_kwargs = dict(
             group_id=self.config.consumer_group,
             bootstrap_servers=self.config.bootstrap_server,
             api_version=self.config.api_version,
+            auto_offset_reset=self.config.auto_offset_reset,
+            max_partition_fetch_bytes=self.config.max_partition_fetch_bytes,
             enable_auto_commit=True,
         )
         if self.config.security_protocol == SecurityProtocol.SSL:
@@ -94,8 +108,18 @@ class KafkaSource(BaseSource):
             consumer_kwargs['sasl_plain_username'] = self.config.sasl_config.username
             consumer_kwargs['sasl_plain_password'] = self.config.sasl_config.password
 
-            if self.config.ssl_config is not None and self.config.ssl_config.cafile:
-                consumer_kwargs['ssl_cafile'] = self.config.ssl_config.cafile
+            if self.config.ssl_config:
+                consumer_kwargs[
+                    'ssl_check_hostname'] = self.config.ssl_config.check_hostname
+                if self.config.ssl_config.cafile:
+                    consumer_kwargs['ssl_cafile'] = self.config.ssl_config.cafile
+                if self.config.ssl_config.certfile:
+                    consumer_kwargs['ssl_certfile'] = self.config.ssl_config.certfile
+                if self.config.ssl_config.keyfile:
+                    consumer_kwargs['ssl_keyfile'] = self.config.ssl_config.keyfile
+                if self.config.ssl_config.password:
+                    consumer_kwargs['ssl_password'] = self.config.ssl_config.password
+
         elif self.config.security_protocol == SecurityProtocol.SASL_PLAINTEXT:
             consumer_kwargs['security_protocol'] = SecurityProtocol.SASL_PLAINTEXT
             consumer_kwargs['sasl_mechanism'] = self.config.sasl_config.mechanism
@@ -163,7 +187,38 @@ class KafkaSource(BaseSource):
             message = self.__deserialize_message(message.value)
         return message
 
+    def _handle_offsets(self):
+        self._print('Configuring consumer offset')
+        self.consumer.unsubscribe()
+        partitions = [TopicPartition(partition['topic'], partition['partition']) for partition
+                      in self.config.offset.get('partitions')]
+        self._print(f'{partitions}')
+        self.consumer.assign(partitions=partitions)
+
+        offset_type = self.config.offset.get('type')
+        offset_value = self.config.offset.get('value')
+
+        if offset_type == 'int':
+            for partition in partitions:
+                self.consumer.seek(partition=partition,
+                                   offset=offset_value)
+        elif offset_type == 'timestamp':
+            timestamps = {partition: offset_value for partition in partitions}
+            # Retrieve each partition offset for given time
+            offset_times = self.consumer.offsets_for_times(timestamps)
+
+            for partition in partitions:
+                self.consumer.seek(partition=partition,
+                                   offset=offset_times[partition].offset)
+        elif offset_type == 'beginning':
+            self.consumer.seek_to_beginning()
+
+        elif offset_type == 'end':
+            self.consumer.seek_to_end()
+
     def read(self, handler: Callable):
+        if self.config.offset:
+            self._handle_offsets()
         self._print('Start consuming single messages.')
         for message in self.consumer:
             self.__print_message(message)
@@ -171,6 +226,8 @@ class KafkaSource(BaseSource):
             handler(message)
 
     async def read_async(self, handler: Callable):
+        if self.config.offset:
+            self._handle_offsets()
         self._print('Start consuming messages asynchronously.')
         for message in self.consumer:
             self.__print_message(message)
@@ -178,6 +235,8 @@ class KafkaSource(BaseSource):
             await handler(message)
 
     def batch_read(self, handler: Callable):
+        if self.config.offset:
+            self._handle_offsets()
         self._print('Start consuming messages in batches.')
         if self.config.batch_size > 0:
             batch_size = self.config.batch_size
@@ -213,7 +272,8 @@ class KafkaSource(BaseSource):
                 handler(message_values)
 
     def test_connection(self):
-        return True
+        self.consumer._client.check_version(timeout=5)
+        self._print('Test connection successfully.')
 
     def __deserialize_message(self, message):
         if self.config.serde_config is None:

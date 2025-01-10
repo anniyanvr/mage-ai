@@ -38,7 +38,7 @@ import { SectionEnum, SectionItemEnum } from '@components/settings/Dashboard/con
 import { dateFormatLong } from '@utils/date';
 import { displayName } from '@utils/models/user';
 import { displayNames } from '@utils/models/permission';
-import { getUser } from '@utils/session';
+import { getUser, setUser } from '@utils/session';
 import { indexBy, sortByKey } from '@utils/array';
 import { isEmptyObject, selectKeys } from '@utils/hash';
 import { onSuccess } from '@api/utils/response';
@@ -46,7 +46,7 @@ import { pauseEvent } from '@utils/events';
 
 const ICON_SIZE = 2 * UNIT;
 
-enum ObjectTypeEnum {
+export enum ObjectTypeEnum {
   PERMISSIONS = 'Permissions',
   ROLES = 'Roles',
 }
@@ -72,21 +72,22 @@ type UserAttributesType = {
 
 type UserDetailPageProps = {
   contained?: boolean;
+  disableFields?: ObjectTypeEnum[];
   onCancel?: () => void;
   slug?: number | string;
 };
 
 function UserDetail({
   contained,
+  disableFields,
   onCancel,
   slug,
 }: UserDetailPageProps) {
+  const router = useRouter();
   const {
     id: currentUserID,
     owner: isOwner,
-  } = getUser() || {};
-
-  const router = useRouter();
+  } = getUser(router?.basePath) || {};
 
   const [afterHidden, setAfterHidden] = useState(true);
   const [addingObjectType, setAddingObjectType] = useState(null);
@@ -156,6 +157,16 @@ function UserDetail({
 
             if (!user) {
               router.push(`/settings/workspace/users/${objectServer?.id}`);
+            }
+
+            if (String(objectServer?.id) === String(currentUserID)) {
+              setUser({
+                ...getUser(router?.basePath),
+                avatar: objectServer?.avatar,
+                first_name: objectServer?.first_name,
+                last_name: objectServer?.last_name,
+                username: objectServer?.username,
+              }, router?.basePath);
             }
 
             toast.success(
@@ -302,11 +313,12 @@ function UserDetail({
   const buildTable = useCallback((
     objectsArray: RoleType[],
     enableClickRow?: boolean,
+    disableEdit?: boolean,
   ) => (
     <Table
-      columnFlex={[null, 1]}
+      columnFlex={[...(disableEdit ? [] : [null]), 1]}
       columns={[
-        {
+        ...(disableEdit ? [] : [{
           label: () => {
             const checked = objectsArray?.every(({ id }) => rolesMapping?.[id]);
 
@@ -331,12 +343,12 @@ function UserDetail({
             );
           },
           uuid: 'actions',
-        },
+        }]),
         {
           uuid: 'Role',
         },
       ]}
-      onClickRow={enableClickRow
+      onClickRow={(enableClickRow && !disableEdit)
         ? (rowIndex: number) => {
           const object = objectsArray[rowIndex];
           if (object && typeof window !== 'undefined') {
@@ -353,7 +365,7 @@ function UserDetail({
         const checked = !!rolesMapping?.[id];
 
         return [
-          <Checkbox
+          ...(disableEdit ? [] : [<Checkbox
             checked={checked}
             key="checkbox"
             onClick={(e) => {
@@ -371,7 +383,7 @@ function UserDetail({
                 rolesMapping: mapping,
               });
             }}
-          />,
+          />]),
           <Text key="name" monospace>
             {name}
           </Text>,
@@ -387,84 +399,85 @@ function UserDetail({
   const buildTablePermissions = useCallback((
     objectArray: PermissionType[],
     enableClickRow?: boolean,
+    disableEdit?: boolean,
   ) => (
-   <Table
-      columnFlex={[null, 2, 1, 1, 6]}
-      columns={[
-        {
-          uuid: 'ID',
-        },
-        {
-          uuid: 'Entity',
-        },
-        {
-          uuid: 'Subtype',
-        },
-        {
-          uuid: 'Entity ID',
-        },
-        {
-          rightAligned: true,
-          uuid: 'Access',
-        },
-      ]}
-      onClickRow={enableClickRow
-        ? (rowIndex: number) => {
-          const object = objectArray[rowIndex];
-          if (object && typeof window !== 'undefined') {
-            window.open(`/settings/workspace/permissions/${object?.id}`, '_blank').focus();
+    <Table
+        columnFlex={[null, 2, 1, 1, 6]}
+        columns={[
+          {
+            uuid: 'ID',
+          },
+          {
+            uuid: 'Entity',
+          },
+          {
+            uuid: 'Subtype',
+          },
+          {
+            uuid: 'Entity ID',
+          },
+          {
+            rightAligned: true,
+            uuid: 'Access',
+          },
+        ]}
+        onClickRow={(enableClickRow && !disableEdit)
+          ? (rowIndex: number) => {
+            const object = objectArray[rowIndex];
+            if (object && typeof window !== 'undefined') {
+              window.open(`/settings/workspace/permissions/${object?.id}`, '_blank').focus();
+            }
           }
+          : null
         }
-        : null
-      }
-      rows={objectArray?.map(({
-        access,
-        entity,
-        entity_id: entityID,
-        entity_name: entityName,
-        entity_type: entityType,
-        id,
-      }) => {
-        const accessDisplayNames = access ? displayNames(access) : [];
-        const accessDisplayNamesCount = accessDisplayNames?.length || 0;
+        rows={objectArray?.map(({
+          access,
+          entity,
+          entity_id: entityID,
+          entity_name: entityName,
+          entity_type: entityType,
+          id,
+        }) => {
+          const accessDisplayNames = access ? displayNames(access) : [];
+          const accessDisplayNamesCount = accessDisplayNames?.length || 0;
 
-        return [
-          <Text default key="id" monospace>
-            {id}
-          </Text>,
-          <Text key="entityName" monospace>
-            {entityName || entity}
-          </Text>,
-          <Text default key="entityType" monospace={!!entityType}>
-            {entityType || '-'}
-          </Text>,
-          <Text default key="entityID" monospace={!!entityID}>
-            {entityID || '-'}
-          </Text>,
-          <div key="access">
-            {accessDisplayNamesCount >= 1 && (
-              <FlexContainer alignItems="center" flexWrap="wrap" justifyContent="flex-end">
-                {accessDisplayNames?.map((displayName: string, idx: number) => (
-                  <div key={displayName}>
-                    <Text default monospace small>
-                      {displayName}{accessDisplayNamesCount >= 2
-                        && idx < accessDisplayNamesCount - 1
-                        && (
-                          <Text inline muted small>
-                            ,&nbsp;
-                          </Text>
-                        )
-                      }
-                    </Text>
-                  </div>
-                ))}
-              </FlexContainer>
-            )}
-          </div>,
-        ];
-      })}
-      uuid="permissions"
-    />
+          return [
+            <Text default key="id" monospace>
+              {id}
+            </Text>,
+            <Text key="entityName" monospace>
+              {entityName || entity}
+            </Text>,
+            <Text default key="entityType" monospace={!!entityType}>
+              {entityType || '-'}
+            </Text>,
+            <Text default key="entityID" monospace={!!entityID}>
+              {entityID || '-'}
+            </Text>,
+            <div key="access">
+              {accessDisplayNamesCount >= 1 && (
+                <FlexContainer alignItems="center" flexWrap="wrap" justifyContent="flex-end">
+                  {accessDisplayNames?.map((displayName: string, idx: number) => (
+                    <div key={displayName}>
+                      <Text default monospace small>
+                        {displayName}{accessDisplayNamesCount >= 2
+                          && idx < accessDisplayNamesCount - 1
+                          && (
+                            <Text inline muted small>
+                              ,&nbsp;
+                            </Text>
+                          )
+                        }
+                      </Text>
+                    </div>
+                  ))}
+                </FlexContainer>
+              )}
+            </div>,
+          ];
+        })}
+        uuid="permissions"
+      />
   ), []);
 
   const afterRoles = useMemo(() => buildTable(rolesAll), [
@@ -472,13 +485,20 @@ function UserDetail({
     rolesAll,
   ]);
 
-  const rolesMemo = useMemo(() => buildTable(roles, true), [
+  const rolesMemo = useMemo(() => buildTable(roles, true, (disableFields || [])?.includes(ObjectTypeEnum.ROLES)), [
     buildTable,
+    disableFields,
     roles,
   ]);
 
-  const permissionsMemo = useMemo(() => buildTablePermissions(permissions, true), [
+  const permissionsMemo = useMemo(
+    () => buildTablePermissions(
+      permissions,
+      true,
+      (disableFields || [])?.includes(ObjectTypeEnum.PERMISSIONS),
+    ), [
     buildTablePermissions,
+    disableFields,
     permissions,
   ]);
 
@@ -876,7 +896,7 @@ function UserDetail({
 
                 <Spacing mr={PADDING_UNITS} />
 
-                {hasRoles && (
+                {hasRoles && !(disableFields || [])?.includes(ObjectTypeEnum.ROLES) && (
                   <FlexContainer alignItems="center">
                     {addRoleButton}
                   </FlexContainer>
@@ -886,7 +906,7 @@ function UserDetail({
 
             <Divider light />
 
-            {!hasRoles && (
+            {!hasRoles && !(disableFields || [])?.includes(ObjectTypeEnum.ROLES) && (
               <Spacing p={PADDING_UNITS}>
                 <Spacing mb={PADDING_UNITS}>
                   <Text default>
@@ -1031,9 +1051,11 @@ function UserDetail({
               ].concat(user ? [] : 'email'), {
                 include_blanks: true,
               }),
-              role_ids: Object.keys(
-                objectAttributes?.rolesMapping || {},
-              ).map(i => Number(i)),
+              ...(disableFields?.includes(ObjectTypeEnum.ROLES) ? {} : {
+                role_ids: Object.keys(
+                  objectAttributes?.rolesMapping || {},
+                ).map(i => Number(i)),
+              }),
             },
           })}
           primary

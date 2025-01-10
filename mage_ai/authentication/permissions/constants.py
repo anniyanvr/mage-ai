@@ -1,10 +1,9 @@
-from enum import Enum
-
 from mage_ai.api.operations.constants import OperationType
 from mage_ai.data_preparation.models.constants import BlockType, PipelineType
+from mage_ai.shared.enum import IntEnum, StrEnum
 
 
-class EntityName(str, Enum):
+class EntityName(StrEnum):
     ALL = 'ALL'
     ALL_EXCEPT_RESERVED = 'ALL_EXCEPT_RESERVED'
     AutocompleteItem = 'AutocompleteItem'
@@ -14,14 +13,27 @@ class EntityName(str, Enum):
     BlockOutput = 'BlockOutput'
     BlockRun = 'BlockRun'
     BlockTemplate = 'BlockTemplate'
+    BrowserItem = 'BrowserItem'
+    CacheItem = 'CacheItem'
     Chart = 'Chart'
     ClientPage = 'ClientPage'
     Cluster = 'Cluster'
+    CodeExecution = 'CodeExecution'
+    CommandCenterItem = 'CommandCenterItem'
+    ComputeCluster = 'ComputeCluster'
+    ComputeConnection = 'ComputeConnection'
+    ComputeService = 'ComputeService'
+    ConfigurationOption = 'ConfigurationOption'
+    CustomDesign = 'CustomDesign'
     CustomTemplate = 'CustomTemplate'
     DataProvider = 'DataProvider'
     Database = 'Database'
+    Download = 'Download'
     EventMatcher = 'EventMatcher'
     EventRule = 'EventRule'
+    ExecutionFramework = 'ExecutionFramework'
+    ExecutionFrameworkPipeline = 'ExecutionFrameworkPipeline'
+    ExecutionState = 'ExecutionState'
     ExtensionOption = 'ExtensionOption'
     Feature = 'Feature'
     File = 'File'
@@ -32,11 +44,13 @@ class EntityName(str, Enum):
     GitCustomBranch = 'GitCustomBranch'
     GitFile = 'GitFile'
     GlobalDataProduct = 'GlobalDataProduct'
+    GlobalHook = 'GlobalHook'
     IntegrationDestination = 'IntegrationDestination'
     IntegrationSource = 'IntegrationSource'
     IntegrationSourceStream = 'IntegrationSourceStream'
     Interaction = 'Interaction'
     Kernel = 'Kernel'
+    KernelProcess = 'KernelProcess'
     Llm = 'Llm'
     Log = 'Log'
     MonitorStat = 'MonitorStat'
@@ -48,6 +62,7 @@ class EntityName(str, Enum):
     PageComponent = 'PageComponent'
     Permission = 'Permission'
     Pipeline = 'Pipeline'
+    PipelineExecutionFramework = 'PipelineExecutionFramework'
     PipelineInteraction = 'PipelineInteraction'
     PipelineRun = 'PipelineRun'
     PipelineSchedule = 'PipelineSchedule'
@@ -59,6 +74,7 @@ class EntityName(str, Enum):
     Scheduler = 'Scheduler'
     SearchResult = 'SearchResult'
     Secret = 'Secret'
+    Seed = 'Seed'
     Session = 'Session'
     SparkApplication = 'SparkApplication'
     SparkEnvironment = 'SparkEnvironment'
@@ -76,6 +92,10 @@ class EntityName(str, Enum):
     User = 'User'
     UserRole = 'UserRole'
     Variable = 'Variable'
+    VersionControlBranch = 'VersionControlBranch'
+    VersionControlFile = 'VersionControlFile'
+    VersionControlProject = 'VersionControlProject'
+    VersionControlRemote = 'VersionControlRemote'
     Widget = 'Widget'
     Workspace = 'Workspace'
 
@@ -88,7 +108,7 @@ RESERVED_ENTITY_NAMES = [
 ]
 
 
-class BaseEntityType(str, Enum):
+class BaseEntityType(StrEnum):
     pass
 
 
@@ -116,7 +136,7 @@ class PipelineEntityType(BaseEntityType):
     STREAMING = PipelineType.STREAMING.value
 
 
-class PermissionAccess(int, Enum):
+class PermissionAccess(IntEnum):
     OWNER = 1
     ADMIN = 2
     # Editor: list, detail, create, update, delete
@@ -156,7 +176,7 @@ class PermissionAccess(int, Enum):
     DISABLE_UNLESS_CONDITIONS = 1073741824
 
 
-class PermissionCondition(str, Enum):
+class PermissionCondition(StrEnum):
     HAS_NOTEBOOK_EDIT_ACCESS = 'HAS_NOTEBOOK_EDIT_ACCESS'
     HAS_PIPELINE_EDIT_ACCESS = 'HAS_PIPELINE_EDIT_ACCESS'
     USER_OWNS_ENTITY = 'USER_OWNS_ENTITY'
@@ -168,20 +188,36 @@ ACCESS_FOR_VIEWER = [
     PermissionAccess.READ,
     PermissionAccess.VIEWER,
 ]
-ACCESS_FOR_EDITOR = list(set(ACCESS_FOR_VIEWER + [
-    PermissionAccess.CREATE,
-    PermissionAccess.DELETE,
-    PermissionAccess.EDITOR,
-    PermissionAccess.QUERY,
-    PermissionAccess.UPDATE,
-    PermissionAccess.WRITE,
-]))
-ACCESS_FOR_ADMIN = list(set(ACCESS_FOR_VIEWER + ACCESS_FOR_EDITOR + [
-    PermissionAccess.ADMIN,
-]))
-ACCESS_FOR_OWNER = list(set(ACCESS_FOR_ADMIN + [
-    PermissionAccess.OWNER,
-]))
+ACCESS_FOR_EDITOR = list(
+    set(
+        ACCESS_FOR_VIEWER
+        + [
+            PermissionAccess.CREATE,
+            PermissionAccess.DELETE,
+            PermissionAccess.EDITOR,
+            PermissionAccess.QUERY,
+            PermissionAccess.UPDATE,
+            PermissionAccess.WRITE,
+        ]
+    )
+)
+ACCESS_FOR_ADMIN = list(
+    set(
+        ACCESS_FOR_VIEWER
+        + ACCESS_FOR_EDITOR
+        + [
+            PermissionAccess.ADMIN,
+        ]
+    )
+)
+ACCESS_FOR_OWNER = list(
+    set(
+        ACCESS_FOR_ADMIN
+        + [
+            PermissionAccess.OWNER,
+        ]
+    )
+)
 
 PERMISSION_ACCESS_WITH_MULTIPLE_ACCESS = {
     f'{PermissionAccess.ADMIN}': ACCESS_FOR_ADMIN,

@@ -12,11 +12,19 @@ class Queue(ABC):
         pass
 
     @abstractmethod
-    def has_job(self, job_id: str):
+    def has_job(self, job_id: str, logger=None):
         pass
 
     @abstractmethod
     def kill_job(self, job_id: str):
+        pass
+
+    @abstractmethod
+    def start(self):
+        pass
+
+    @abstractmethod
+    def stop(self):
         pass
 
     def _print(self, msg):

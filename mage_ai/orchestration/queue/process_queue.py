@@ -2,11 +2,11 @@ import multiprocessing as mp
 import os
 import signal
 import time
-from enum import Enum
 from multiprocessing import Manager
-from typing import Callable
+from typing import Callable, Dict
 
 import newrelic.agent
+import psutil
 import sentry_sdk
 from sentry_sdk import capture_exception
 
@@ -15,16 +15,30 @@ from mage_ai.orchestration.queue.config import QueueConfig
 from mage_ai.orchestration.queue.queue import Queue
 from mage_ai.services.newrelic import initialize_new_relic
 from mage_ai.services.redis.redis import init_redis_client
-from mage_ai.settings import HOSTNAME, REDIS_URL, SENTRY_DSN, SENTRY_TRACES_SAMPLE_RATE
+from mage_ai.settings import (
+    HOSTNAME,
+    REDIS_URL,
+    SENTRY_DSN,
+    SENTRY_TRACES_SAMPLE_RATE,
+    SERVER_LOGGING_FORMAT,
+    SERVER_VERBOSITY,
+)
+from mage_ai.shared.enum import StrEnum
+from mage_ai.shared.logger import set_logging_format
 
 LIVENESS_TIMEOUT_SECONDS = 300
 
 
-class JobStatus(str, Enum):
+class JobStatus(StrEnum):
     QUEUED = 'queued'
     RUNNING = 'running'  # Not used. The value for RUNNING job is process id.
     COMPLETED = 'completed'
     CANCELLED = 'cancelled'
+
+
+class QueueStatus(StrEnum):
+    ACTIVE = 'active'
+    INACTIVE = 'inactive'
 
 
 class ProcessQueue(Queue):
@@ -44,6 +58,7 @@ class ProcessQueue(Queue):
                 jobs.
 
         """
+        self.status = QueueStatus.INACTIVE
         self.queue_config = queue_config
         self.process_queue_config = self.queue_config.process_queue_config
         self.queue = mp.Queue()
@@ -67,12 +82,16 @@ class ProcessQueue(Queue):
 
     def clean_up_jobs(self):
         """
-        Cleans up completed jobs from the job dictionary.
+        1. Cleans up completed jobs from the job dictionary.
+        2. Check whether there're jobs need to be killed.
         """
         job_ids = self.job_dict.keys()
         for job_id in job_ids:
-            if job_id in self.job_dict and not self.has_job(job_id):
-                del self.job_dict[job_id]
+            if job_id in self.job_dict:
+                if not self.has_job(job_id):
+                    del self.job_dict[job_id]
+                elif self.__should_kill_job(job_id):
+                    self.kill_job(job_id)
 
     def enqueue(self, job_id: str, target: Callable, *args, **kwargs):
         """
@@ -85,6 +104,9 @@ class ProcessQueue(Queue):
             **kwargs: Keyword arguments for the target function.
 
         """
+        if self.status != QueueStatus.ACTIVE:
+            self._print('Cannot enqueue a job to an inactive queue.')
+            return
         if self.has_job(job_id):
             self._print(f'Job {job_id} exists. Skip enqueue.')
             return
@@ -98,7 +120,7 @@ class ProcessQueue(Queue):
         if not self.is_worker_pool_alive():
             self.start_worker_pool()
 
-    def has_job(self, job_id: str) -> bool:
+    def has_job(self, job_id: str, logger=None, logging_tags: Dict = None) -> bool:
         """
         Checks if a job with the given ID exists in the queue or is currently being executed.
 
@@ -116,7 +138,24 @@ class ProcessQueue(Queue):
             if job_client_id != self.client_id and self.redis_client.get(job_client_id):
                 return True
         job = self.job_dict.get(job_id)
-        return job is not None and (job == JobStatus.QUEUED or isinstance(job, int))
+        if job is None:
+            return False
+        if job == JobStatus.QUEUED and not self.queue.empty():
+            # Job is in queue
+            return True
+        if isinstance(job, int):
+            # Job is being processed
+            if self.__is_process_alive(job):
+                return True
+            else:
+                # Process is dead
+                if logger is not None:
+                    logger.info(
+                        f'Process {job} is dead for job {job_id}',
+                        **(logging_tags or dict()))
+                return False
+        # Return False if job is in other statuses
+        return False
 
     def kill_job(self, job_id: str):
         """
@@ -129,6 +168,7 @@ class ProcessQueue(Queue):
         print(f'Kill job {job_id}, job_dict {self.job_dict}')
         job = self.job_dict.get(job_id)
         if not job:
+            self.__set_kill_job(job_id)
             return
         if isinstance(job, int):
             if job == os.getpid():
@@ -139,6 +179,7 @@ class ProcessQueue(Queue):
             except Exception as err:
                 print(err)
         self.job_dict[job_id] = JobStatus.CANCELLED
+        self.__unset_kill_job(job_id)
 
     def start_worker_pool(self):
         """
@@ -156,6 +197,28 @@ class ProcessQueue(Queue):
         )
         self.worker_pool_proc.start()
 
+    def start(self):
+        self.status = QueueStatus.ACTIVE
+
+    def stop(self):
+        """
+        1. Stop enqueueing new jobs
+        2. Clear the queue
+        3. Kill all the running jobs
+        """
+        self.status = QueueStatus.INACTIVE
+        while not self.queue.empty():
+            try:
+                self.queue.get_nowait()
+            except self.queue.Empty:
+                break
+        job_ids = self.job_dict.keys()
+        for job_id in job_ids:
+            if job_id in self.job_dict:
+                if isinstance(self.job_dict.get(job_id), int):
+                    self.kill_job(job_id)
+                del self.job_dict[job_id]
+
     def is_worker_pool_alive(self) -> bool:
         """
         Checks if the worker pool process is alive.
@@ -167,6 +230,34 @@ class ProcessQueue(Queue):
         if self.worker_pool_proc is None:
             return False
         return self.worker_pool_proc.is_alive()
+
+    def __is_process_alive(self, pid: int) -> bool:
+        return psutil.pid_exists(pid)
+
+    def __redis_key_kill_job(self, job_id):
+        return f'kill_job_{job_id}'
+
+    def __set_kill_job(self, job_id):
+        if not self.redis_client:
+            return
+        return self.redis_client.set(
+            self.__redis_key_kill_job(job_id),
+            '1',
+            ex=LIVENESS_TIMEOUT_SECONDS,
+        )
+
+    def __unset_kill_job(self, job_id):
+        if not self.redis_client:
+            return
+        key = self.__redis_key_kill_job(job_id)
+        if self.redis_client.get(key):
+            self.redis_client.delete(key)
+
+    def __should_kill_job(self, job_id):
+        if not self.redis_client:
+            return False
+        value = self.redis_client.get(self.__redis_key_kill_job(job_id))
+        return value is not None
 
 
 class Worker(mp.Process):
@@ -198,6 +289,11 @@ class Worker(mp.Process):
                 traces_sample_rate=SENTRY_TRACES_SAMPLE_RATE,
             )
         initialize_new_relic()
+
+        set_logging_format(
+            logging_format=SERVER_LOGGING_FORMAT,
+            level=SERVER_VERBOSITY,
+        )
 
     @newrelic.agent.background_task(name='worker-run', group='Task')
     def run(self):
@@ -241,10 +337,11 @@ def poll_job_and_execute(
         job_dict: The shared job dictionary.
 
     """
+    pid = os.getpid()
     workers = []
     while True:
         workers = [w for w in workers if w.is_alive()]
-        print(f'Worker pool size: {len(workers)}')
+        print(f'[Process {pid}] Worker pool size: {len(workers)}')
         if not workers and queue.empty():
             break
         while not queue.empty():

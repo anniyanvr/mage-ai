@@ -1,9 +1,10 @@
-import StreamingPipeline from '@oracle/icons/custom/StreamingPipeline';
 import {
   AISparkle,
   BatchPipeline,
-  DataIntegrationPipeline,
+  IntegrationPipeline,
+  StreamingPipeline,
   TemplateShapes,
+  Upload,
 } from '@oracle/icons';
 import { PipelineTypeEnum } from '@interfaces/PipelineType';
 import { UNIT } from '@oracle/styles/units/spacing';
@@ -18,39 +19,59 @@ export const getNewPipelineButtonMenuItems = (
   opts?: {
     showAIModal?: () => void;
     showBrowseTemplates?: () => void;
+    showCreatePipelineModal?: (opts: { pipelineType: PipelineTypeEnum }) => void;
+    showImportPipelineModal?: () => void;
   },
 ) => {
   const arr = [
     {
       beforeIcon: <BatchPipeline />,
       label: () => 'Standard (batch)',
-      onClick: () => createPipeline({
-        pipeline: {
-          name: randomNameGenerator(),
-        },
-      }),
+      onClick: () => {
+        if (opts?.showCreatePipelineModal) {
+          opts?.showCreatePipelineModal?.({ pipelineType: PipelineTypeEnum.PYTHON });
+        } else {
+          createPipeline({
+            pipeline: {
+              name: randomNameGenerator(),
+            },
+          });
+        }
+      },
       uuid: 'Pipelines/NewPipelineMenu/standard',
     },
     {
-      beforeIcon: <DataIntegrationPipeline />,
+      beforeIcon: <IntegrationPipeline />,
       label: () => 'Data integration',
-      onClick: () => createPipeline({
-        pipeline: {
-          name: randomNameGenerator(),
-          type: PipelineTypeEnum.INTEGRATION,
-        },
-      }),
+      onClick: () => {
+        if (opts?.showCreatePipelineModal) {
+          opts?.showCreatePipelineModal?.({ pipelineType: PipelineTypeEnum.INTEGRATION });
+        } else {
+          createPipeline({
+            pipeline: {
+              name: randomNameGenerator(),
+              type: PipelineTypeEnum.INTEGRATION,
+            },
+          });
+        }
+      },
       uuid: 'Pipelines/NewPipelineMenu/integration',
     },
     {
       beforeIcon: <StreamingPipeline size={ICON_SIZE} />,
       label: () => 'Streaming',
-      onClick: () => createPipeline({
-        pipeline: {
-          name: randomNameGenerator(),
-          type: PipelineTypeEnum.STREAMING,
-        },
-      }),
+      onClick: () => {
+        if (opts?.showCreatePipelineModal) {
+          opts?.showCreatePipelineModal?.({ pipelineType: PipelineTypeEnum.STREAMING });
+        } else {
+          createPipeline({
+            pipeline: {
+              name: randomNameGenerator(),
+              type: PipelineTypeEnum.STREAMING,
+            },
+          });
+        }
+      },
       uuid: 'Pipelines/NewPipelineMenu/streaming',
     },
   ];
@@ -61,6 +82,15 @@ export const getNewPipelineButtonMenuItems = (
       label: () => 'From a template',
       onClick: () => opts?.showBrowseTemplates?.(),
       uuid: 'Pipelines/NewPipelineMenu/custom_template',
+    });
+  }
+
+  if (opts?.showImportPipelineModal) {
+    arr.push({
+      beforeIcon: <Upload />,
+      label: () => 'Import pipeline zip',
+      onClick: () => opts?.showImportPipelineModal?.(),
+      uuid: 'Pipelines/NewPipelineMenu/upload',
     });
   }
 

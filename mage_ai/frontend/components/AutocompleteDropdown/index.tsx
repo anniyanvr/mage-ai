@@ -6,6 +6,15 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import { useRouter } from 'next/router';
+
+import EventPropertiesType, {
+  EVENT_ACTION_TYPE_SELECT,
+  EVENT_COMPONENT_TYPE_AUTOCOMPLETE_RESULT,
+  buildEventData,
+  getDefaultEventParameters,
+  logEventCustom,
+} from '@interfaces/EventPropertiesType';
 import {
   ItemType,
   ItemGroupType,
@@ -18,6 +27,7 @@ import {
   KEY_CODE_SHIFT,
   KEY_CODE_TAB,
 } from '@utils/hooks/keyboardShortcuts/constants';
+import { pauseEvent } from '@utils/events';
 import { useKeyboardContext } from '@context/Keyboard';
 
 export type AutocompleteDropdownSharedProps = {
@@ -32,7 +42,9 @@ export type AutocompleteDropdownSharedProps = {
 };
 
 export type AutocompleteDropdownProps = {
+  eventProperties?: EventPropertiesType;
   itemGroups: ItemGroupType[];
+  maxResults?: number;
   noResultGroups?: ItemGroupType[];
   onHighlightItemIndexChange?: (idx: number) => void;
   setItemRefs?: (refs: any[]) => void;
@@ -48,8 +60,10 @@ function filterItem(item: ItemType, searchQuery: string) {
 }
 
 function AutocompleteDropdown({
+  eventProperties,
   highlightedItemIndexInitial = null,
   itemGroups: itemGroupsProp,
+  maxResults,
   noResultGroups,
   onHighlightItemIndexChange,
   onMouseEnterItem,
@@ -61,7 +75,24 @@ function AutocompleteDropdown({
   setItemRefs,
   uuid,
 }: AutocompleteDropdownProps) {
+  const router = useRouter();
+  const query = router?.query;
   const [mouseVisible, setMouseVisible] = useState(true);
+
+  const {
+    eventActionType = EVENT_ACTION_TYPE_SELECT,
+    eventComponentType = EVENT_COMPONENT_TYPE_AUTOCOMPLETE_RESULT,
+    eventParameters: eventParametersProp = {},
+  } = eventProperties || {};
+  const defaultEventParameters = getDefaultEventParameters(eventParametersProp, query);
+  const {
+    eventName,
+    eventParameters,
+  } = buildEventData({
+    actionType: eventActionType,
+    componentType: eventComponentType,
+    parameters: defaultEventParameters,
+  });
 
   const {
     itemGroups,
@@ -70,21 +101,29 @@ function AutocompleteDropdown({
     const itemsFlattenedInternal = [];
 
     const arr = itemGroupsProp.reduce((acc: ItemGroupType[], itemGroup: ItemGroupType) => {
-      const { items } = itemGroup;
+      if (!maxResults || itemsFlattenedInternal.length <= maxResults) {
+        const { items } = itemGroup;
 
-      const itemsFiltered = items
-        .filter((item: ItemType) => !searchQuery || filterItem(item, searchQuery));
+        let itemsFiltered = items
+          .filter((item: ItemType) => !searchQuery || filterItem(item, searchQuery));
 
-      if (itemsFiltered.length === 0) {
-        return acc;
+        if (itemsFiltered.length === 0) {
+          return acc;
+        }
+
+        if (maxResults) {
+          itemsFiltered = itemsFiltered?.slice(0, maxResults - itemsFlattenedInternal?.length);
+        }
+
+        itemsFlattenedInternal.push(...itemsFiltered);
+
+        return acc.concat({
+          ...itemGroup,
+          items: itemsFiltered,
+        });
       }
 
-      itemsFlattenedInternal.push(...itemsFiltered);
-
-      return acc.concat({
-        ...itemGroup,
-        items: itemsFiltered,
-      });
+      return acc;
     }, []);
 
     return {
@@ -93,6 +132,7 @@ function AutocompleteDropdown({
     };
   }, [
     itemGroupsProp,
+    maxResults,
     searchQuery,
   ]);
 
@@ -123,6 +163,20 @@ function AutocompleteDropdown({
     uuid,
   ]);
 
+  const handleOnSelectItem = useCallback((item: ItemType) => {
+    const {
+      itemObject = {},
+      searchQueries = [],
+    } = item || {};
+    const searchQuery = searchQueries.join('_');
+    logEventCustom(eventName, {
+      ...itemObject,
+      ...eventParameters,
+      search_query: searchQuery,
+    });
+    onSelectItem(item);
+  }, [eventName, eventParameters, onSelectItem]);
+
   registerOnKeyDown?.(
     uuid,
     (event, keyMapping, keyHistory) => {
@@ -144,7 +198,7 @@ function AutocompleteDropdown({
 
       if (itemIndexForKeyboardShortcut !== -1) {
         event.preventDefault();
-        onSelectItem(itemsFlattened[itemIndexForKeyboardShortcut]);
+        handleOnSelectItem(itemsFlattened[itemIndexForKeyboardShortcut]);
         setMouseVisible(mouseVisibleNew);
 
         return setHighlightedItemIndex(itemIndexForKeyboardShortcut);
@@ -155,7 +209,11 @@ function AutocompleteDropdown({
           event.preventDefault();
         }
 
-        onSelectItem(itemsFlattened[highlightedItemIndex]);
+        if (keyMapping[KEY_CODE_ENTER]) {
+          pauseEvent(event);
+        }
+
+        handleOnSelectItem(itemsFlattened[highlightedItemIndex]);
         setMouseVisible(mouseVisibleNew);
 
         return setHighlightedItemIndex(highlightedItemIndex);
@@ -275,7 +333,7 @@ function AutocompleteDropdown({
               >
                 {renderItem(item, {
                   highlighted,
-                  onClick: () => onSelectItem(item),
+                  onClick: () => handleOnSelectItem(item),
                   onMouseEnter: () => onMouseEnterItem?.(item),
                   onMouseLeave: () => onMouseLeaveItem?.(item),
                 }, idx2, indexFlattened)}

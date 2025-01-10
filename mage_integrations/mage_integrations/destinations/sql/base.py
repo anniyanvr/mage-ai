@@ -9,10 +9,8 @@ from mage_integrations.destinations.constants import (
     REPLICATION_METHOD_INCREMENTAL,
     REPLICATION_METHOD_LOG_BASED,
 )
-from mage_integrations.destinations.utils import (
-    clean_column_name,
-    update_record_with_internal_columns,
-)
+from mage_integrations.destinations.sql.utils import clean_column_name
+from mage_integrations.destinations.utils import update_record_with_internal_columns
 from mage_integrations.utils.array import batch
 from mage_integrations.utils.dictionary import merge_dict
 
@@ -39,8 +37,14 @@ class Destination(BaseDestination):
     def use_lowercase(self) -> bool:
         return self.config.get('lower_case', True)
 
+    @property
+    def allow_reserved_words(self) -> bool:
+        return self.config.get('allow_reserved_words', False)
+
     def clean_column_name(self, col):
-        return clean_column_name(col, lower_case=self.use_lowercase)
+        return clean_column_name(col,
+                                 lower_case=self.use_lowercase,
+                                 allow_reserved_words=self.allow_reserved_words)
 
     def test_connection(self) -> None:
         sql_connection = self.build_connection()
@@ -204,26 +208,6 @@ class Destination(BaseDestination):
 
         return query_strings
 
-    def handle_insert_commands(
-        self,
-        record_data: List[Dict],
-        stream: str,
-        tags: Dict = None,
-    ) -> List[str]:
-        if tags is None:
-            tags = {}
-        query_strings = []
-
-        for idx, sub_batch in enumerate(batch(record_data, self.BATCH_SIZE)):
-            query_strings += self._handle_insert_commands_single_batch(
-                sub_batch,
-                stream,
-                idx=idx,
-                tags=tags,
-            )
-
-        return query_strings
-
     def _handle_insert_commands_single_batch(
         self,
         record_data: List[Dict],
@@ -277,7 +261,7 @@ class Destination(BaseDestination):
 
         if self.debug:
             for qs in query_strings:
-                print(qs, '\n')
+                self.logger.info(f'qs: {qs}')
 
         results += self.build_connection().execute(query_strings, commit=True)
 
@@ -304,7 +288,7 @@ class Destination(BaseDestination):
                         try:
                             results += self.build_connection().execute([qs], commit=True)
                         except Exception as err:
-                            print(qs)
+                            self.logger.info(f'qs: {qs}')
                             raise err
                 else:
                     results += self.build_connection().execute(query_strings, commit=True)
@@ -323,7 +307,7 @@ class Destination(BaseDestination):
                     try:
                         results += self.build_connection().execute([qs], commit=True)
                     except Exception as err:
-                        print(qs, '\n')
+                        self.logger.info(f'qs: {qs}')
                         raise err
             else:
                 results += self.build_connection().execute(query_strings, commit=True)
@@ -393,6 +377,7 @@ class Destination(BaseDestination):
         return self.records_inserted, self.records_updated
 
     def _wrap_with_quotes(self, name):
+        name = name.replace('"', '')
         return f'{self.quote}{name}{self.quote}'
 
 

@@ -268,7 +268,7 @@ class Sink(metaclass=abc.ABCMeta):
         Record metadata specs documented at:
         https://sdk.meltano.com/en/latest/implementation/record_metadata.md
         """
-        properties_dict = self.schema["properties"]
+        properties_dict = self.schema.get("properties", {})
         for col in {
             "_sdc_extracted_at",
             "_sdc_received_at",
@@ -439,7 +439,7 @@ class Sink(metaclass=abc.ABCMeta):
             new_version: The version number to activate.
         """
         _ = new_version
-        self.logger.warning(
+        self.logger.info(
             "ACTIVATE_VERSION message received but not implemented by this target. "
             "Ignoring.",
         )
@@ -585,3 +585,10 @@ class BatchSink(Sink):
         Args:
             context: Stream partition or context dictionary.
         """
+
+    def _after_process_record(self, context: dict) -> None:
+        # printing after every record is too verbose for batch sinks, so commenting it out for now
+        # records = context.get('records', [])
+        # if len(records) > 0:
+        #     self.logger.debug(f'Processed record: {records[-1]}')
+        pass

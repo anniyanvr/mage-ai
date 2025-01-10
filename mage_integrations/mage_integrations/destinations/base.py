@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import traceback
+from abc import ABC, abstractmethod
 from os.path import isfile
 from typing import Dict, List
 
@@ -49,7 +50,7 @@ LOGGER = singer.get_logger()
 MAXIMUM_BATCH_SIZE_MB = 100
 
 
-class Destination():
+class Destination(ABC):
     def __init__(
         self,
         argument_parser=None,
@@ -126,21 +127,6 @@ class Destination():
 
         self._streams_from_catalog = None
 
-    @classmethod
-    def templates(self) -> List[Dict]:
-        parts = inspect.getfile(self).split('/')
-        absolute_path = get_abs_path(f"{'/'.join(parts[:len(parts) - 1])}/templates")
-
-        templates = {}
-        for filename in os.listdir(absolute_path):
-            path = absolute_path + '/' + filename
-            if isfile(path):
-                file_raw = filename.replace('.json', '')
-                with open(path) as file:
-                    templates[file_raw] = json.load(file)
-
-        return templates
-
     @property
     def config(self) -> Dict:
         if self._config:
@@ -172,6 +158,10 @@ class Destination():
             return self._settings
         return {}
 
+    @settings.setter
+    def settings(self, settings):
+        self._settings = settings
+
     @property
     def streams_from_catalog(self) -> Dict:
         if self._streams_from_catalog is not None:
@@ -185,22 +175,22 @@ class Destination():
 
         return self._streams_from_catalog
 
-    @settings.setter
-    def settings(self, settings):
-        self._settings = settings
-
     @property
     def streams_override_settings(self) -> Dict:
         return self.config.get(STREAM_OVERRIDE_SETTINGS_KEY, {})
 
+    @abstractmethod
     def test_connection(self) -> None:
-        raise Exception('Subclasses must implement the test_connection method.')
+        raise NotImplementedError('Subclasses must implement the test_connection method.')
 
-    def before_process(self) -> None:
+    def before_process(self) -> None:   # noqa: B027
         pass
 
-    def after_process(self) -> None:
+    def after_process(self) -> None:    # noqa: B027
         pass
+
+    def export_batch_data(self, record_data: List[Dict], stream: str, tags: Dict = None) -> None:
+        raise NotImplementedError('Subclasses must implement the export_batch_data method.')
 
     def export_data(
         self,
@@ -219,9 +209,6 @@ class Destination():
             stream=stream,
             tags=tags,
         )], stream)
-
-    def export_batch_data(self, record_data: List[Dict], stream: str, tags: Dict = None) -> None:
-        raise Exception('Subclasses must implement the export_batch_data method.')
 
     def process_record(
         self,
@@ -546,7 +533,7 @@ class Destination():
         self.logger.info('Process batch set started.', tags=tags)
 
         errors = []
-        stream_states = {}
+        stream_bookmarks = {}
         for stream, batches in batches_by_stream.items():
             record_data = batches['record_data']
 
@@ -566,15 +553,24 @@ class Destination():
 
                     states = batches['state_data']
                     if len(states) >= 1:
-                        stream_states[stream] = states[-1]
+                        merged_bookmarks = dict()
+                        # Merge the states record to one set of bookmarks
+                        for state in states:
+                            state_bookmarks = state['row'][KEY_VALUE]['bookmarks']
+                            for k, v in state_bookmarks.items():
+                                if k in merged_bookmarks and isinstance(v, dict) and \
+                                        isinstance(merged_bookmarks[k], dict):
+                                    merged_bookmarks[k] = merge_dict(merged_bookmarks[k], v)
+                                else:
+                                    merged_bookmarks[k] = v
+                        stream_bookmarks[stream] = merged_bookmarks
                 except Exception as err:
                     errors.append(err)
 
-        if len(stream_states.values()) >= 1:
+        if len(stream_bookmarks.values()) >= 1:
             bookmarks = {}
-            for state in stream_states.values():
-                bookmarks.update(state['row'][KEY_VALUE]['bookmarks'])
-
+            for bookmark in stream_bookmarks.values():
+                bookmarks.update(bookmark)
             state_data = dict(row={
                 KEY_VALUE: dict(bookmarks=bookmarks),
             })
@@ -648,11 +644,12 @@ class Destination():
 
             if 'anyOf' in prop_k:
                 for any_of in prop_k['anyOf']:
-                    any_of_type = any_of['type']
-                    if type(any_of_type) is list:
-                        prop_types += any_of_type
-                    else:
-                        prop_types.append(any_of_type)
+                    any_of_type = any_of.get('type')
+                    if any_of_type is not None:
+                        if type(any_of_type) is list:
+                            prop_types += any_of_type
+                        else:
+                            prop_types.append(any_of_type)
 
             if COLUMN_TYPE_ARRAY not in prop_types:
                 continue
@@ -733,3 +730,18 @@ class Destination():
                     })
 
         return record_adjusted
+
+    @classmethod
+    def templates(cls) -> List[Dict]:
+        parts = inspect.getfile(cls).split('/')
+        absolute_path = get_abs_path(f"{'/'.join(parts[:len(parts) - 1])}/templates")
+
+        templates = {}
+        for filename in os.listdir(absolute_path):
+            path = absolute_path + '/' + filename
+            if isfile(path):
+                file_raw = filename.replace('.json', '')
+                with open(path) as file:
+                    templates[file_raw] = json.load(file)
+
+        return templates

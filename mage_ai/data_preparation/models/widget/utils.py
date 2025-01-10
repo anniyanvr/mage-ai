@@ -13,13 +13,13 @@ def clean_series(series, column_type=None, dropna=True):
     if dropna:
         series_cleaned = series_cleaned.dropna()
 
-    if column_type is int:
+    if column_type is float:
+        series_cleaned = series_cleaned.astype(float)
+    elif column_type is int:
         try:
             series_cleaned = series_cleaned.astype(float).astype(np.int64)
         except ValueError:
             series_cleaned = series_cleaned.astype(float)
-    elif column_type is float:
-        series_cleaned = series_cleaned.astype(float)
 
     return series_cleaned
 
@@ -50,6 +50,9 @@ def build_metric_name(metric):
 def calculate_metric_for_series(series, aggregation):
     series = clean_series(series)
     value = 0
+
+    if len(series) == 0:
+        return value
 
     if AggregationFunction.AVERAGE == aggregation:
         count = len(series)

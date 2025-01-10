@@ -2,52 +2,53 @@ import moment from 'moment';
 
 import BlockRunType from '@interfaces/BlockRunType';
 import PipelineScheduleType from '@interfaces/PipelineScheduleType';
-import { DATE_FORMAT_LONG_NO_SEC_WITH_OFFSET, dateFormatLong } from '@utils/date';
-import { DEFAULT_PORT } from '@api/utils/url';
+import {
+  DATE_FORMAT_LONG_NO_SEC,
+  DATE_FORMAT_LONG_NO_SEC_WITH_OFFSET,
+  DATE_FORMAT_LONG_T_SEP,
+  dateFormatLong,
+} from '@utils/date';
 import {
   PipelineScheduleFilterQueryEnum,
   ScheduleIntervalEnum,
   ScheduleTypeEnum,
 } from '@interfaces/PipelineScheduleType';
 import { TimeType } from '@oracle/components/Calendar';
-import { getDayRangeForCurrentMonth } from '@utils/date';
+import { datetimeInLocalTimezone, getDayRangeForCurrentMonth } from '@utils/date';
+import { getHost } from '@api/utils/url';
 import { ignoreKeys } from '@utils/hash';
 import { rangeSequential } from '@utils/array';
 
-export const checkIfCustomInterval = (
-  scheduleInterval: string,
-) => !!scheduleInterval &&
+export const checkIfCustomInterval = (scheduleInterval: string) =>
+  !!scheduleInterval &&
   !Object.values(ScheduleIntervalEnum).includes(scheduleInterval as ScheduleIntervalEnum);
 
 export function createBlockStatus(blockRuns: BlockRunType[]) {
-  return blockRuns?.reduce(
-    (prev, blockRun) => {
-      const {
-        block_uuid: blockUuid,
-        completed_at: completedAt,
-        started_at: startedAt,
-        status,
-      } = blockRun;
+  return blockRuns?.reduce((prev, blockRun) => {
+    const {
+      block_uuid: blockUuid,
+      completed_at: completedAt,
+      started_at: startedAt,
+      status,
+    } = blockRun;
 
-      let runtime = null;
+    let runtime = null;
 
-      if (startedAt && completedAt) {
-        const completedAtTs = moment(completedAt).valueOf();
-        const startedAtTs = moment(startedAt).valueOf();
+    if (startedAt && completedAt) {
+      const completedAtTs = moment(completedAt).valueOf();
+      const startedAtTs = moment(startedAt).valueOf();
 
-        runtime = completedAtTs - startedAtTs;
-      }
+      runtime = completedAtTs - startedAtTs;
+    }
 
-      return {
-        ...prev,
-        [blockUuid]: {
-          runtime,
-          status: status,
-        },
-      };
-    },
-    {},
-  );
+    return {
+      ...prev,
+      [blockUuid]: {
+        runtime,
+        status: status,
+      },
+    };
+  }, {});
 }
 
 export const getTriggerTypes = (
@@ -64,32 +65,20 @@ export const getTriggerTypes = (
       uuid: ScheduleTypeEnum.TIME,
     },
     {
-      description: () => 'This pipeline will run when a specific event occurs.',
-      label: () => 'Event',
-      uuid: ScheduleTypeEnum.EVENT,
-    },
-    {
       description: () => 'Run this pipeline when you make an API call.',
       label: () => 'API',
       uuid: ScheduleTypeEnum.API,
     },
   ];
 
-  return isStreamingPipeline
-    ? triggerTypes.slice(0, 1)
-    : triggerTypes;
+  return isStreamingPipeline ? triggerTypes.slice(0, 1) : triggerTypes;
 };
 
-export function getPipelineScheduleApiFilterQuery(
-  query: any,
-) {
-  const apiFilterQuery = ignoreKeys(
-    query,
-    [
-      PipelineScheduleFilterQueryEnum.INTERVAL,
-      PipelineScheduleFilterQueryEnum.TYPE,
-    ],
-  );
+export function getPipelineScheduleApiFilterQuery(query: any) {
+  const apiFilterQuery = ignoreKeys(query, [
+    PipelineScheduleFilterQueryEnum.INTERVAL,
+    PipelineScheduleFilterQueryEnum.TYPE,
+  ]);
   const intervalQueryValue = query[PipelineScheduleFilterQueryEnum.INTERVAL];
   if (intervalQueryValue) {
     apiFilterQuery['schedule_interval[]'] = encodeURIComponent(intervalQueryValue);
@@ -108,26 +97,28 @@ export function getTimeInUTC(dateTime: string): Date {
   }
   const date = new Date(moment(dateTime).valueOf());
 
-  const utcTs = Date.UTC(
-    date.getFullYear(),
-    date.getMonth(),
-    date.getDate(),
-    date.getHours(),
-    date.getMinutes(),
-    date.getSeconds(),
-  );
-  return new Date(utcTs);
+  return date;
 }
 
-export function getTimeInUTCString(dateTime: string) {
+export function getTimeInUTCString(dateTime: string, format: string = null) {
   if (typeof dateTime !== 'string') {
     return dateTime;
   }
   const formattedDate = dateTime.split('+')[0];
+  const momentObj = moment(getTimeInUTC(formattedDate));
+  const datetimeString = momentObj.format(format || DATE_FORMAT_LONG_T_SEP);
 
-  return getTimeInUTC(formattedDate)
-    .toISOString()
-    .split('.')[0];
+  return datetimeString;
+}
+
+export function displayLocalOrUtcTime(
+  datetime: string,
+  displayLocalTimezone: boolean,
+  format: string = null,
+) {
+  return displayLocalTimezone
+    ? datetimeInLocalTimezone(datetime, displayLocalTimezone, format)
+    : getTimeInUTCString(datetime, format);
 }
 
 export enum TimeUnitEnum {
@@ -172,27 +163,29 @@ export function getDatetimeFromDateAndTime(
   date: Date,
   time: TimeType,
   opts?: {
-    convertToUtc?: boolean,
-    localTimezone?: boolean,
-    includeSeconds?: boolean,
+    convertToUtc?: boolean;
+    localTimezone?: boolean;
+    includeSeconds?: boolean;
   },
 ): string {
-  let datetimeString = `${date.toISOString().split('T')[0]} ${time?.hour}:${time?.minute}`;
+  let datetimeString;
+
+  const momentObj = moment(date);
+  momentObj.set('hour', +time?.hour || 0);
+  momentObj.set('minute', +time?.minute || 0);
+  momentObj.set('second', 0);
+  datetimeString = momentObj.format(DATE_FORMAT_LONG_NO_SEC);
 
   if (opts?.includeSeconds) {
     datetimeString = datetimeString.concat(':00');
   }
   if (opts?.localTimezone) {
-    const momentObj = moment(date);
-    momentObj.set('hour', +time?.hour || 0);
-    momentObj.set('minute', +time?.minute || 0);
-    momentObj.set('second', 0);
     datetimeString = momentObj.format(DATE_FORMAT_LONG_NO_SEC_WITH_OFFSET);
     if (opts?.convertToUtc) {
-      datetimeString = dateFormatLong(
-        datetimeString,
-        { includeSeconds: opts?.includeSeconds, utcFormat: true },
-      );
+      datetimeString = dateFormatLong(datetimeString, {
+        includeSeconds: opts?.includeSeconds,
+        utcFormat: true,
+      });
     }
   }
 
@@ -204,26 +197,18 @@ export function getTriggerApiEndpoint(
   useHeaderUrl: boolean = false,
 ) {
   let url = '';
-  let port: string;
 
   const windowIsDefined = typeof window !== 'undefined';
   if (windowIsDefined) {
+    const host = getHost();
     if (useHeaderUrl) {
-      url = `${window.origin}/api/pipeline_schedules/${pipelineSchedule?.id}/api_trigger`;
+      url = `${host}/api/pipeline_schedules/${pipelineSchedule?.id}/api_trigger`;
     } else {
-      url = `${window.origin}/api/pipeline_schedules/${pipelineSchedule?.id}/pipeline_runs`;
-      
+      url = `${host}/api/pipeline_schedules/${pipelineSchedule?.id}/pipeline_runs`;
+
       if (pipelineSchedule?.token) {
         url = `${url}/${pipelineSchedule.token}`;
       }
-    }
-  }
-
-  if (windowIsDefined) {
-    port = window.location.port;
-
-    if (port) {
-      url = url.replace(port, DEFAULT_PORT);
     }
   }
 
@@ -260,9 +245,13 @@ function calculateCronValueWithOffset(
       }
     }
   }
+
+  const cronValueFinal =
+    typeof range[currentIndex] === 'number' ? range[currentIndex] : timeUnitValue;
+
   return {
     additionalOffset: additionalOffsetForGreaterTimeUnit,
-    cronValue: String(range[currentIndex] || timeUnitValue),
+    cronValue: String(cronValueFinal),
   };
 }
 
@@ -277,21 +266,14 @@ function adjustSingleCronValueForTimeOffset(
       cronValue,
     };
   } else {
-    return calculateCronValueWithOffset(
-      +cronValue,
-      timeOffset,
-      timeRange,
-    );
+    return calculateCronValueWithOffset(+cronValue, timeOffset, timeRange);
   }
 }
 
 const minuteRange = rangeSequential(60);
 const hourRange = rangeSequential(24);
 const dayRange = getDayRangeForCurrentMonth();
-export function convertUtcCronExpressionToLocalTimezone(
-  cronExpression: string,
-  reverse?: boolean,
-) {
+export function convertUtcCronExpressionToLocalTimezone(cronExpression: string, reverse?: boolean) {
   if (!cronExpression) {
     return cronExpression;
   }
@@ -299,9 +281,8 @@ export function convertUtcCronExpressionToLocalTimezone(
   const localTimezoneOffset = moment().local().format('Z');
   const offsetParts = localTimezoneOffset.split(':');
   const isNegativeOffset = localTimezoneOffset[0] === '-';
-  let hourOffset = offsetParts[0].length === 3
-    ? Number(offsetParts[0].slice(1))
-    : Number(offsetParts[0]);
+  let hourOffset =
+    offsetParts[0].length === 3 ? Number(offsetParts[0].slice(1)) : Number(offsetParts[0]);
   let minuteOffset = Number(offsetParts[1]);
   if ((isNegativeOffset && !reverse) || (!isNegativeOffset && reverse)) {
     hourOffset = -hourOffset;

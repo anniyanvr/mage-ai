@@ -66,6 +66,17 @@ class RepoManagerTest(DBTestCase):
         )
         shutil.rmtree(test.variables_dir)
 
+    def test_pipelines(self):
+        test = RepoConfig(repo_path=os.path.join(self.repo_path, 'non_existing_path'))
+        test.pipelines = dict(
+            settings=dict(
+                triggers=dict(
+                    save_in_code_automatically=True,
+                ),
+            ),
+        )
+        self.assertTrue(test.pipelines.settings.triggers.save_in_code_automatically)
+
     def test_variables_dir_expanduser(self):
         dir_name = uuid.uuid4().hex
         metadata_dict = dict(
@@ -84,21 +95,24 @@ class RepoManagerTest(DBTestCase):
         shutil.rmtree(test_dir)
 
     def test_set_project_uuid_from_metadata(self):
-        test_metadata_file = os.path.join(self.repo_path, 'test_repo_manager.yaml')
+        test_metadata_file = os.path.join(self.repo_path, 'metadata.yaml')
         with open(test_metadata_file, 'w', encoding='utf-8') as f:
             yaml.dump(dict(project_uuid='123456789'), f)
 
-        with patch(
-            'mage_ai.data_preparation.repo_manager.get_metadata_path',
-            return_value=test_metadata_file
-        ):
+        set_project_uuid_from_metadata()
+        self.assertEqual(get_project_uuid(), '123456789')
+        # Reset the project metadata.yaml
+        with open(os.path.join(self.repo_path, 'metadata.yaml'), 'w', encoding='utf-8') as f:
+            yaml.dump(dict(), f)
             set_project_uuid_from_metadata()
-            self.assertEqual(get_project_uuid(), '123456789')
-        os.remove(test_metadata_file)
 
     @patch('uuid.uuid4')
     def test_init_project_uuid(self, mock_uuid):
         mock_uuid.return_value = mock_uuid_value()
+        # Reset the project metadata.yaml
+        with open(os.path.join(self.repo_path, 'metadata.yaml'), 'w', encoding='utf-8') as f:
+            yaml.dump(dict(), f)
+            set_project_uuid_from_metadata()
 
         init_project_uuid()
         self.assertEqual(get_project_uuid(), mock_uuid_value().hex)

@@ -1,7 +1,7 @@
 import json
 from datetime import datetime
 from functools import reduce
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import simplejson
 
@@ -31,17 +31,24 @@ async def execute_operation(
     )
     start_time = datetime.utcnow()
 
-    if request.error:
-        return __render_error(handler, request.error, **tags)
+    meta = __meta(request)
+    http_error_codes = (meta or {}).get('_http_error_codes', False)
 
-    action, options = __determine_action(
-        request, child=child, child_pk=child_pk, pk=pk)
+    if request.error:
+        return __render_error(
+            handler,
+            request.error,
+            http_error_codes=http_error_codes,
+            **tags,
+        )
+
+    action, options = __determine_action(request, child=child, child_pk=child_pk, pk=pk)
     try:
         base_operation = BaseOperation(
             action=action,
             files=request.files,
             headers=request.headers,
-            meta=__meta(request),
+            meta=meta,
             oauth_client=request.oauth_client,
             oauth_token=request.oauth_token,
             options=options,
@@ -66,15 +73,17 @@ async def execute_operation(
 
     error_response = response.get('error', None)
     if error_response:
-        return __render_error(handler, error_response, **tags)
+        return __render_error(handler, error_response, http_error_codes=http_error_codes, **tags)
 
-    info('Action: {} {} {} {} {}'.format(
-        action,
-        child or resource,
-        child_pk or pk,
-        resource if child else '',
-        pk if child else '',
-    ))
+    info(
+        'Action: {} {} {} {} {}'.format(
+            action,
+            child or resource,
+            child_pk or pk,
+            resource if child else '',
+            pk if child else '',
+        )
+    )
     api_time = end_time.timestamp() - start_time.timestamp()
     info(f'Latency: {api_time:.4f} seconds')
     tags = dict(
@@ -87,11 +96,13 @@ async def execute_operation(
     timing('api.time', api_time, tags)
     timing('sql.time', api_time, tags)
 
-    handler.write(simplejson.dumps(
-        response,
-        default=encode_complex,
-        ignore_nan=True,
-    ))
+    handler.write(
+        simplejson.dumps(
+            response,
+            default=encode_complex,
+            ignore_nan=True,
+        )
+    )
 
 
 def __determine_action(
@@ -139,25 +150,24 @@ def __meta(request) -> Dict:
                 pass
             arr.append(val)
 
-        meta[k] = arr[0]
+        if len(arr) >= 2:
+            meta[k] = arr
+        else:
+            meta[k] = arr[0]
 
     return meta
 
 
 def __meta_keys(request) -> List[str]:
-    return list(
-        filter(
-            lambda x: x[0] == '_', [
-                k for k in request.query_arguments.keys()]))
+    return list(filter(lambda x: x[0] == '_', [k for k in request.query_arguments.keys()]))
 
 
 def __payload(request) -> Dict:
-    if 'Content-Type' in request.headers and \
-       'multipart/form-data' in request.headers.get('Content-Type'):
-
+    if 'Content-Type' in request.headers and 'multipart/form-data' in request.headers.get(
+        'Content-Type'
+    ):
         parts = request.body.decode('utf-8', 'ignore').split('\r\n')
-        idx = parts.index(
-            'Content-Disposition: form-data; name="json_root_body"')
+        idx = parts.index('Content-Disposition: form-data; name="json_root_body"')
         json_root_body = parts[idx + 2]
 
         return json.loads(json_root_body)
@@ -190,15 +200,25 @@ def __query(request) -> Dict:
         else:
             obj[key] = value
         return obj
+
     return reduce(_build, request.query_arguments.keys() - meta_keys, {})
 
 
-def __render_error(handler, error: Dict, **kwargs):
+def __render_error(handler, error: Dict, http_error_codes: Optional[bool] = None, **kwargs):
     __log_error(handler.request, error, **kwargs)
-    handler.write(dict(
-        error=error,
-        status=200,
-    ))
+
+    error_code = 200
+
+    if error is not None and http_error_codes:
+        error_code = error.get('code', 500)
+        handler.set_status(error_code) if error_code else None
+
+    handler.write(
+        dict(
+            error=error,
+            status=error_code,
+        )
+    )
 
 
 def __log_error(
@@ -222,16 +242,21 @@ def __log_error(
             if child_pk:
                 endpoint += '/{}'.format(child_pk)
 
-    error('[{}] [ERROR] {} /{} [user: {}]: {}'.format(
-        datetime.utcnow(),
-        request.method,
-        endpoint,
-        user_id,
-        err,
-    ))
+    error(
+        '[{}] [ERROR] {} /{} [user: {}]: {}'.format(
+            datetime.utcnow(),
+            request.method,
+            endpoint,
+            user_id,
+            err,
+        )
+    )
 
-    increment('api.error', tags=dict(
-        endpoint=endpoint,
-        error=err['type'] if isinstance(err, dict) else type(err).__name__,
-        resource=resource,
-    ))
+    increment(
+        'api.error',
+        tags=dict(
+            endpoint=endpoint,
+            error=err['type'] if isinstance(err, dict) else type(err).__name__,
+            resource=resource,
+        ),
+    )

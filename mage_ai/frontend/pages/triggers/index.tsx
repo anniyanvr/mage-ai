@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
 
 import Dashboard from '@components/Dashboard';
@@ -8,6 +8,7 @@ import PrivateRoute from '@components/shared/PrivateRoute';
 import ProjectType, { FeatureUUIDEnum } from '@interfaces/ProjectType';
 import Select from '@oracle/elements/Inputs/Select';
 import Spacing from '@oracle/elements/Spacing';
+import Spinner from '@oracle/components/Spinner';
 import Text from '@oracle/elements/Text';
 import TriggersTable from '@components/Triggers/Table';
 import api from '@api';
@@ -23,6 +24,8 @@ import { storeLocalTimezoneSetting } from '@components/settings/workspace/utils'
 
 function TriggerListPage() {
   const router = useRouter();
+  const [errors, setErrors] = useState(null);
+
   const q = queryFromUrl();
   const page = q?.page ? q.page : 0;
   const orderByQuery = q?.order_by || SortQueryParamEnum.CREATED_AT;
@@ -62,12 +65,14 @@ function TriggerListPage() {
 
   return (
     <Dashboard
+      errors={errors}
+      setErrors={setErrors}
       title="Triggers"
       uuid="triggers/index"
     >
       <Spacing mx={2} my={1}>
         <FlexContainer alignItems="center">
-          <Text bold default large>Sort runs by:</Text>
+          <Text bold default large>Sort by:</Text>
           <Spacing mr={1} />
           <Select
             compact
@@ -95,33 +100,43 @@ function TriggerListPage() {
         </FlexContainer>
       </Spacing>
 
-      <TriggersTable
-        fetchPipelineSchedules={fetchPipelineSchedules}
-        highlightRowOnHover
-        includeCreatedAtColumn
-        includePipelineColumn
-        pipelineSchedules={pipelineSchedules}
-        stickyHeader
-      />
+      {!dataPipelineSchedules
+        ?
+          <Spacing m={2}>
+            <Spinner inverted large />
+          </Spacing>
+        :
+          <>
+            <TriggersTable
+              fetchPipelineSchedules={fetchPipelineSchedules}
+              highlightRowOnHover
+              includeCreatedAtColumn
+              includePipelineColumn
+              pipelineSchedules={pipelineSchedules}
+              setErrors={setErrors}
+              stickyHeader
+            />
 
-      <Spacing p={2}>
-        <Paginate
-          maxPages={9}
-          onUpdate={(p) => {
-            const newPage = Number(p);
-            const updatedQuery = {
-              ...q,
-              page: newPage >= 0 ? newPage : 0,
-            };
-            router.push(
-              '/triggers',
-              `/triggers?${queryString(updatedQuery)}`,
-            );
-          }}
-          page={Number(page)}
-          totalPages={Math.ceil(totalSchedules / ROW_LIMIT)}
-        />
-      </Spacing>
+            <Spacing p={2}>
+              <Paginate
+                maxPages={9}
+                onUpdate={(p) => {
+                  const newPage = Number(p);
+                  const updatedQuery = {
+                    ...q,
+                    page: newPage >= 0 ? newPage : 0,
+                  };
+                  router.push(
+                    '/triggers',
+                    `/triggers?${queryString(updatedQuery)}`,
+                  );
+                }}
+                page={Number(page)}
+                totalPages={Math.ceil(totalSchedules / ROW_LIMIT)}
+              />
+            </Spacing>
+          </>
+      }
     </Dashboard>
   );
 }

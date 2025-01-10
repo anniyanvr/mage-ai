@@ -4,6 +4,7 @@ import { useMutation } from 'react-query';
 
 import AddChartMenu from './AddChartMenu';
 import BlockType, {
+  BLOCK_TYPES_NOT_SUPPORTED_WITH_CHARTS,
   BlockLanguageEnum,
   BlockTypeEnum,
 } from '@interfaces/BlockType';
@@ -70,7 +71,7 @@ type CommandButtonsProps = {
   addNewBlock: (block: BlockType) => Promise<any>;
   block: BlockType;
   blockContent?: string;
-  fetchFileTree: () => void;
+  fetchFileTree?: () => void;
   fetchPipeline: () => void;
   hideExtraButtons?: boolean;
   isEditingBlock?: boolean;
@@ -530,10 +531,11 @@ function CommandButtons({
         </Spacing>
       )}
 
-      {!hideExtraButtons && ([
-        BlockTypeEnum.DATA_LOADER,
-        BlockTypeEnum.TRANSFORMER,
-      ].includes(block.type) && !isStreaming && !isIntegration) && (
+      {!hideExtraButtons && !(BLOCK_TYPES_NOT_SUPPORTED_WITH_CHARTS.includes(block.type)
+      && (BlockTypeEnum.DBT !== block.type || BlockLanguageEnum.YAML !== block?.language)
+      && !isStreaming
+      && !isIntegration)
+      && (
         <>
           <Spacing
             ml={PADDING_UNITS}

@@ -1,7 +1,6 @@
-import enum
 import re
 from datetime import datetime
-from typing import Dict, List, Union
+from typing import Callable, List, Union
 
 from sqlalchemy import (
     JSON,
@@ -12,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Text,
     and_,
     asc,
     func,
@@ -29,8 +29,8 @@ from mage_ai.orchestration.constants import Entity
 from mage_ai.orchestration.db import db_connection, safe_db_query
 from mage_ai.orchestration.db.errors import ValidationError
 from mage_ai.orchestration.db.models.base import BaseModel
-from mage_ai.settings.repo import get_repo_path
 from mage_ai.shared.array import find
+from mage_ai.shared.enum import IntEnum, StrEnum
 from mage_ai.shared.environments import is_test
 from mage_ai.shared.hash import group_by, merge_dict
 
@@ -156,10 +156,11 @@ class User(BaseModel):
 
         return False
 
-    @property
-    def git_settings(self) -> Union[Dict, None]:
+    def get_git_settings(self, repo_path: str):
         preferences = self.preferences or dict()
-        return preferences.get(get_repo_path(), {}).get('git_settings')
+        pref = preferences.get(repo_path)
+        if pref:
+            return (pref or {}).get('git_settings')
 
     @classmethod
     @safe_db_query
@@ -298,7 +299,7 @@ class Role(BaseModel):
     user = relationship(User, back_populates='created_roles')
 
     # Default global roles created by Mage
-    class DefaultRole(str, enum.Enum):
+    class DefaultRole(StrEnum):
         OWNER = 'Owner'
         ADMIN = 'Admin'
         EDITOR = 'Editor'
@@ -317,10 +318,10 @@ class Role(BaseModel):
     @classmethod
     @safe_db_query
     def create_default_roles(
-        self,
+        cls,
         entity: Entity = None,
         entity_id: str = None,
-        prefix: str = None,
+        name_func: Callable[[str], str] = None,
     ) -> None:
         """
         Create default roles with associated permissions for a given entity and entity_id.
@@ -335,18 +336,18 @@ class Role(BaseModel):
             entity = Entity.GLOBAL
         permissions = Permission.create_default_permissions(entity=entity, entity_id=entity_id)
         mapping = {
-            self.DefaultRole.OWNER: Permission.Access.OWNER,
-            self.DefaultRole.ADMIN: Permission.Access.ADMIN,
-            self.DefaultRole.EDITOR: Permission.Access.EDITOR,
-            self.DefaultRole.VIEWER: Permission.Access.VIEWER,
+            cls.DefaultRole.OWNER: Permission.Access.OWNER,
+            cls.DefaultRole.ADMIN: Permission.Access.ADMIN,
+            cls.DefaultRole.EDITOR: Permission.Access.EDITOR,
+            cls.DefaultRole.VIEWER: Permission.Access.VIEWER,
         }
         for name, access in mapping.items():
             role_name = name
-            if prefix is not None:
-                role_name = f'{prefix}_{name}'
-            role = self.query.filter(self.name == role_name).first()
+            if name_func is not None:
+                role_name = name_func(name)
+            role = cls.query.filter(Role.name == role_name).first()
             if not role:
-                self.create(
+                cls.create(
                     name=role_name,
                     permissions=[
                         Permission.query.filter(
@@ -560,7 +561,7 @@ class UserRole(BaseModel):
 
 
 class Permission(BaseModel):
-    class Access(int, enum.Enum):
+    class Access(IntEnum):
         OWNER = PermissionAccess.OWNER.value
         ADMIN = PermissionAccess.ADMIN.value
         EDITOR = PermissionAccess.EDITOR.value
@@ -840,11 +841,11 @@ class RolePermission(BaseModel):
 
 
 class Oauth2Application(BaseModel):
-    class AuthorizationGrantType(str, enum.Enum):
+    class AuthorizationGrantType(StrEnum):
         AUTHORIZATION_CODE = 'authorization-code'
         CLIENT_CREDENTIALS = 'client-credentials'
 
-    class ClientType(str, enum.Enum):
+    class ClientType(StrEnum):
         PRIVATE = 'private'
         PUBLIC = 'public'
 
@@ -873,9 +874,10 @@ class Oauth2AccessToken(BaseModel):
     expires = Column(DateTime(timezone=True))
     oauth2_application = relationship(Oauth2Application, back_populates='oauth2_access_tokens')
     oauth2_application_id = Column(Integer, ForeignKey('oauth2_application.id'))
-    token = Column(String(255), index=True, unique=True)
+    token = Column(Text, index=True, unique=True)
     user = relationship(User, back_populates='oauth2_access_tokens')
     user_id = Column(Integer, ForeignKey('user.id'))
+    refresh_token = Column(Text)
 
     def is_valid(self) -> bool:
         return self.token and \

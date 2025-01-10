@@ -2,10 +2,13 @@ import FeatureType from '@interfaces/FeatureType';
 import SuggestionType from './SuggestionType';
 import { ActionTypeEnum, AxisEnum } from './ActionPayloadType';
 import { CatalogType } from './IntegrationSourceType';
-import { ConfigurationType } from './ChartBlockType';
+import { ConfigurationType as BaseConfigurationType } from './ChartBlockType';
 import { DataSourceTypeEnum } from './DataSourceType';
-import { DataTypeEnum } from './KernelOutputType';
+import { DataTypeEnum, MsgTypeEnum } from './KernelOutputType';
 import { ExecutorTypeEnum } from '@interfaces/ExecutorType';
+import { IntegrationDestinationEnum, IntegrationSourceEnum } from './IntegrationSourceType';
+import { GroupUUIDEnum } from './PipelineExecutionFramework/types';
+import { InteractionVariableType, InteractionInputType } from './InteractionType';
 
 export enum TagEnum {
   CONDITION = 'condition',
@@ -32,6 +35,7 @@ export const ABBREV_BLOCK_LANGUAGE_MAPPING = {
   [BlockLanguageEnum.YAML]: 'YAML',
 };
 
+// Consider using the one from interfaces/FileType.ts
 export const LANGUAGE_DISPLAY_MAPPING = {
   [BlockLanguageEnum.MARKDOWN]: 'Markdown',
   [BlockLanguageEnum.PYTHON]: 'Python',
@@ -39,6 +43,15 @@ export const LANGUAGE_DISPLAY_MAPPING = {
   [BlockLanguageEnum.SQL]: 'SQL',
   [BlockLanguageEnum.YAML]: 'YAML',
 };
+
+export enum DynamicModeEnum {
+  STREAM = 'stream',
+}
+
+export enum InputDataTypeEnum {
+  BATCH = 'batch',
+  GENERATOR = 'generator',
+}
 
 export enum BlockTypeEnum {
   CALLBACK = 'callback',
@@ -50,17 +63,34 @@ export enum BlockTypeEnum {
   DBT = 'dbt',
   EXTENSION = 'extension',
   GLOBAL_DATA_PRODUCT = 'global_data_product',
+  PIPELINE = 'pipeline',
+  GROUP = 'group',
   SCRATCHPAD = 'scratchpad',
   SENSOR = 'sensor',
   MARKDOWN = 'markdown',
   TRANSFORMER = 'transformer',
 }
 
+export const ALL_BLOCK_TYPES_WITH_SINGULAR_FOLDERS = {
+  [BlockTypeEnum.CUSTOM]: BlockTypeEnum.CUSTOM,
+  [BlockTypeEnum.DBT]: BlockTypeEnum.DBT,
+};
+
+export const ALL_BLOCK_TYPES = Object.entries(BlockTypeEnum).reduce(
+  (acc, [k, v]) => ({
+    ...acc,
+    [v]: k,
+  }),
+  {},
+);
+
 export const SIDEKICK_BLOCK_TYPES = [
   BlockTypeEnum.CALLBACK,
   BlockTypeEnum.CONDITIONAL,
   BlockTypeEnum.EXTENSION,
 ];
+
+export const ADD_ON_BLOCK_TYPES = [BlockTypeEnum.CALLBACK, BlockTypeEnum.CONDITIONAL];
 
 export enum BlockColorEnum {
   BLUE = 'blue',
@@ -76,26 +106,27 @@ export const BLOCK_TYPES = [
   BlockTypeEnum.CUSTOM,
   BlockTypeEnum.DATA_EXPORTER,
   BlockTypeEnum.DATA_LOADER,
+  BlockTypeEnum.DBT,
+  BlockTypeEnum.MARKDOWN,
   BlockTypeEnum.SCRATCHPAD,
   BlockTypeEnum.SENSOR,
-  BlockTypeEnum.MARKDOWN,
   BlockTypeEnum.TRANSFORMER,
 ];
 
 export const DRAGGABLE_BLOCK_TYPES = [
+  BlockTypeEnum.CALLBACK,
+  BlockTypeEnum.CONDITIONAL,
   BlockTypeEnum.CUSTOM,
   BlockTypeEnum.DATA_EXPORTER,
   BlockTypeEnum.DATA_LOADER,
+  BlockTypeEnum.DBT,
+  BlockTypeEnum.MARKDOWN,
   BlockTypeEnum.SCRATCHPAD,
   BlockTypeEnum.SENSOR,
-  BlockTypeEnum.MARKDOWN,
   BlockTypeEnum.TRANSFORMER,
 ];
 
-export const YAML_BLOCK_TYPES = [
-  BlockTypeEnum.DATA_EXPORTER,
-  BlockTypeEnum.DATA_LOADER,
-];
+export const YAML_BLOCK_TYPES = [BlockTypeEnum.DATA_EXPORTER, BlockTypeEnum.DATA_LOADER];
 
 export const R_BLOCK_TYPES = [
   BlockTypeEnum.DATA_EXPORTER,
@@ -125,6 +156,16 @@ export const BLOCK_TYPES_WITH_NO_PARENTS = [
   BlockTypeEnum.MARKDOWN,
 ];
 
+export const BLOCK_TYPES_NOT_SUPPORTED_WITH_CHARTS = [
+  BlockTypeEnum.CALLBACK,
+  BlockTypeEnum.CHART,
+  BlockTypeEnum.CONDITIONAL,
+  BlockTypeEnum.EXTENSION,
+  BlockTypeEnum.MARKDOWN,
+  BlockTypeEnum.SCRATCHPAD,
+  BlockTypeEnum.SENSOR,
+];
+
 export const BLOCK_TYPES_WITH_VARIABLES = [
   BlockTypeEnum.CUSTOM,
   BlockTypeEnum.DATA_EXPORTER,
@@ -143,12 +184,27 @@ export enum StatusTypeEnum {
 export interface SampleDataType {
   columns: string[];
   rows: string[][] | number[][];
+  shape?: number[];
+}
+
+export interface ResourceUsage {
+  directory?: string;
+  path: string;
+  memory_usage: number;
+  size: number;
 }
 
 export interface OutputType {
-  sample_data: SampleDataType;
-  shape: number[];
-  text_data: string;
+  data?: SampleDataType | string | string[];
+  multi_output?: boolean;
+  outputs?: OutputType[];
+  progress?: number;
+  msg_type?: MsgTypeEnum;
+  resource_usage?: ResourceUsage;
+  sample_data?: SampleDataType;
+  shape?: number[];
+  text_data?: string;
+  timestamp?: number;
   type: DataTypeEnum;
   variable_uuid: string;
 }
@@ -175,7 +231,7 @@ export interface AnalysisType {
   variable_uuid: string;
 }
 
-enum ObjectType {
+export enum ObjectType {
   BLOCK_FILE = 'block_file',
   CUSTOM_BLOCK_TEMPLATE = 'custom_block_template',
   MAGE_TEMPLATE = 'mage_template',
@@ -199,6 +255,58 @@ export interface BlockRequestConfigType {
   data_source?: DataSourceTypeEnum;
   suggested_action?: SuggestionType;
   template_path?: string;
+}
+
+interface BatchSettingsValuesType {
+  maximum?: number;
+  minimum?: number;
+}
+
+enum BatchSettingsModeEnum {
+  APPEND = 'append',
+  FAIL = 'fail',
+  MEMORY = 'memory',
+  REPLACE = 'replace',
+}
+
+interface BatchSettingsType {
+  count?: BatchSettingsValuesType;
+  items?: BatchSettingsValuesType;
+  mode?: BatchSettingsModeEnum;
+  size?: BatchSettingsValuesType;
+}
+
+interface VariableSettingsType {
+  batch_settings?: BatchSettingsType;
+  chunks?: string[];
+  input_data_types?: InputDataTypeEnum[];
+}
+
+export interface TemplateType {
+  description?: string;
+  name?: string;
+  inputs?: Record<string, InteractionInputType>;
+  variables?: Record<string, InteractionVariableType>;
+}
+
+export interface ConfigurationType extends BaseConfigurationType {
+  dynamic?:
+    | any
+    | boolean
+    | {
+        batch_settings?: BatchSettingsType;
+        modes?: DynamicModeEnum[];
+        parent?: boolean | string[];
+        reduce_output?: boolean | string[];
+        reduce_output_upstream?: string[];
+      };
+  templates?: Record<string, TemplateType>;
+  variables?: {
+    downstream?: Record<string, VariableSettingsType>;
+    read?: VariableSettingsType;
+    upstream?: Record<string, VariableSettingsType>;
+    write?: VariableSettingsType;
+  };
 }
 
 export interface BlockRequestPayloadType {
@@ -235,8 +343,11 @@ export interface BlockRequestPayloadType {
 export interface BlockPipelineType {
   added_at?: string;
   pipeline: {
+    created_at?: string;
     description?: string;
     name: string;
+    tags?: string[];
+    repo_path?: string;
     type: string;
     updated_at: string;
     uuid: string;
@@ -277,6 +388,7 @@ export default interface BlockType {
   extension_uuid?: string;
   file?: string;
   force?: boolean;
+  groups?: GroupUUIDEnum[];
   has_callback?: boolean;
   language?: BlockLanguageEnum;
   metadata?: {
@@ -284,9 +396,10 @@ export default interface BlockType {
       config?: {
         [key: string]: number | string;
       };
-      destination?: string;
+      destination?: IntegrationDestinationEnum;
       name?: string;
-      source?: string;
+      source?: IntegrationSourceEnum;
+      sql?: boolean;
     };
     dbt?: {
       block?: {
@@ -305,9 +418,8 @@ export default interface BlockType {
   };
   name?: string;
   outputs?: OutputType[];
-  pipelines?: {
-    [uuid: string]: BlockPipelineType;
-  };
+  pipeline?: any;
+  pipelines?: BlockPipelineType[];
   priority?: number;
   replicated_block?: string;
   retry_config?: BlockRetryConfigType;

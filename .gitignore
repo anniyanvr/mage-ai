@@ -134,6 +134,7 @@ mage_ai/server/data/files/**
 default_repo
 instance_metadata.json
 ~/.mage_data
+mage_data/
 
 # test notebook
 test.ipynb
@@ -163,7 +164,10 @@ docker-compose.override.yml
 
 # front-end
 node_modules
+.env
 .npmrc
+# mage_ai/server/frontend_dist
+# mage_ai/server/frontend_dist_base_path_template
 mage_ai/server/frontend_dist_base_path
 
 # Scratch files
@@ -173,12 +177,17 @@ scratch*
 playwright-report/
 
 # Testing files
+!mage_ai/test/
 **/TEST_CATALOG.json
+**/TEST_CONFIG*.json
 **/TEST_CONFIG_D.json
 **/TEST_CONFIG_S.json
 **/TEST_OUTPUT
 **/TEST_STATE.json
-
+mlfow.db
+mlruns/
 package-lock.json
 package.json
-yarn.lock
+test.py
+test/
+test_data*

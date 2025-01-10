@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/router';
 
 import AddButton from '@components/shared/AddButton';
 import Badge from '@oracle/components/Badge';
@@ -47,6 +48,7 @@ type ToolbarProps = {
     Icon: any;
     confirmationDescription?: string;
     confirmationMessage?: string;
+    disabled?: boolean;
     isLoading?: boolean;
     label?: string;
     onClick: () => void;
@@ -75,8 +77,10 @@ type ToolbarProps = {
   query?: {
     [keyof: string]: string[];
   };
+  resetLimitOnFilterApply?: boolean;
   resetPageOnFilterApply?: boolean;
   secondaryButtonProps?: {
+    beforeIcon?: JSX.Element;
     disabled?: boolean;
     isLoading?: boolean;
     label?: string;
@@ -105,6 +109,7 @@ function Toolbar({
   onClickFilterDefaults,
   onFilterApply,
   query = {},
+  resetLimitOnFilterApply,
   resetPageOnFilterApply,
   secondaryButtonProps,
   searchProps,
@@ -112,7 +117,8 @@ function Toolbar({
   setSelectedRow,
   showDivider,
 }: ToolbarProps) {
-  const isViewerRole = isViewer();
+  const router = useRouter();
+  const isViewerRole = isViewer(router?.basePath);
   const addButtonMenuRef = useRef(null);
   const filterButtonMenuRef = useRef(null);
   const groupButtonMenuRef = useRef(null);
@@ -136,6 +142,7 @@ function Toolbar({
     Icon: extraActionIcon,
     confirmationDescription: extraActionConfirmDescription,
     confirmationMessage: extraActionConfirmMessage,
+    disabled: disabledExtraAction = disabledActions,
     isLoading: isLoadingExtraAction,
     label: extraActionLabel,
     onClick: onExtraActionClick,
@@ -195,6 +202,7 @@ function Toolbar({
   ]);
 
   const {
+    beforeIcon: secondaryButtonBeforeIcon,
     disabled: secondaryButtonDisabled,
     label: secondaryButtonLabel,
     onClick: onClickSecondaryButton,
@@ -203,6 +211,7 @@ function Toolbar({
   } = secondaryButtonProps || {};
   const secondaryButtonEl = useMemo(() => (
     <KeyboardShortcutButton
+      beforeElement={secondaryButtonBeforeIcon}
       bold
       disabled={secondaryButtonDisabled}
       greyBorder
@@ -219,6 +228,7 @@ function Toolbar({
   ), [
     isLoadingSecondaryButton,
     onClickSecondaryButton,
+    secondaryButtonBeforeIcon,
     secondaryButtonDisabled,
     secondaryButtonLabel,
     secondaryButtonTooltip,
@@ -245,6 +255,7 @@ function Toolbar({
       options={filterOptionsEnabledMapping}
       parentRef={filterButtonMenuRef}
       query={query}
+      resetLimitOnApply={resetLimitOnFilterApply}
       resetPageOnApply={resetPageOnFilterApply}
       setOpen={setFilterButtonMenuOpen}
       toggleValueMapping={filterValueLabelMapping}
@@ -276,6 +287,8 @@ function Toolbar({
     onClickFilterDefaults,
     onFilterApply,
     query,
+    resetLimitOnFilterApply,
+    resetPageOnFilterApply,
   ]);
 
   const {
@@ -382,7 +395,7 @@ function Toolbar({
             <KeyboardShortcutButton
               Icon={!isLoadingExtraAction && extraActionIcon}
               bold
-              disabled={disabledActions}
+              disabled={disabledExtraAction}
               greyBorder
               loading={isLoadingExtraAction}
               onClick={openExtraActionConfirmDialogue

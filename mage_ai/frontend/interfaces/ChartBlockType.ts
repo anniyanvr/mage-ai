@@ -7,6 +7,7 @@ import { IngestModeEnum } from './DataIntegrationBlockType';
 export const VARIABLE_NAME_BUCKETS = 'buckets';
 export const VARIABLE_NAME_CHART_STYLE = 'chart_style';
 export const VARIABLE_NAME_GROUP_BY = 'group_by';
+export const VARIABLE_NAME_ORDER_BY = 'order_by';
 export const VARIABLE_NAME_HEIGHT = 'height';
 export const VARIABLE_NAME_INDEX = 'index';
 export const VARIABLE_NAME_LEGEND_LABELS = 'legend_labels';
@@ -15,8 +16,16 @@ export const VARIABLE_NAME_METRICS = 'metrics';
 export const VARIABLE_NAME_TIME_INTERVAL = 'time_interval';
 export const VARIABLE_NAME_WIDTH_PERCENTAGE = 'width_percentage';
 export const VARIABLE_NAME_X = 'x';
+export const VARIABLE_NAME_X_AXIS_LABEL_FORMAT = 'x_axis_label_format';
+export const VARIABLE_NAME_X_TOOLTIP_LABEL_FORMAT = 'x_tooltip_label_format';
 export const VARIABLE_NAME_Y = 'y';
+export const VARIABLE_NAME_Y_AXIS_LABEL_FORMAT = 'y_axis_label_format';
+export const VARIABLE_NAME_Y_TOOLTIP_LABEL_FORMAT = 'y_tooltip_label_format';
 export const VARIABLE_NAME_Y_SORT_ORDER = 'y_sort_order';
+export const VARIABLE_GROUP_NAME_DESIGN = 'design';
+export const VARIABLE_GROUP_NAME_DESIGN_X_GRID_LINES_HIDDEN = 'x_grid_lines_hidden';
+export const VARIABLE_GROUP_NAME_DESIGN_Y_GRID_LINES_HIDDEN = 'y_grid_lines_hidden';
+export const VARIABLE_GROUP_NAME_DESIGN_Y_VALUES_SMOOTH = 'y_values_smooth';
 
 export const CONFIG_KEY_DATA_PROVIDER = 'data_provider';
 export const CONFIG_KEY_DATA_PROVIDER_DATABASE = 'data_provider_database';
@@ -25,20 +34,19 @@ export const CONFIG_KEY_DATA_PROVIDER_SCHEMA = 'data_provider_schema';
 export const CONFIG_KEY_DATA_PROVIDER_TABLE = 'data_provider_table';
 export const CONFIG_KEY_DBT_PROFILE_TARGET = 'dbt_profile_target';
 export const CONFIG_KEY_DBT_PROJECT_NAME = 'dbt_project_name';
+export const CONFIG_KEY_DBT_PROFILES_FILE_PATH = 'dbt_profiles_file_path';
 export const CONFIG_KEY_EXPORT_WRITE_POLICY = 'export_write_policy';
 export const CONFIG_KEY_LIMIT = 'limit';
 export const CONFIG_KEY_UNIQUE_UPSTREAM_TABLE_NAME = 'unique_upstream_table_name';
 export const CONFIG_KEY_UPSTREAM_BLOCK_CONFIGURATION = 'upstream_block_configuration';
 export const CONFIG_KEY_UPSTREAM_BLOCK_CONFIGURATION_TABLE_NAME = 'table_name';
 export const CONFIG_KEY_USE_RAW_SQL = 'use_raw_sql';
+export const CONFIG_KEY_DISABLE_QUERY_PREPROCESSING = 'disable_query_preprocessing';
 
 export const CONFIG_KEY_DBT = 'dbt';
 export const CONFIG_KEY_DBT_COMMAND = 'command';
 
-export const VARIABLE_NAMES = [
-  VARIABLE_NAME_X,
-  VARIABLE_NAME_Y,
-];
+export const VARIABLE_NAMES = [VARIABLE_NAME_X, VARIABLE_NAME_Y];
 
 export enum ChartTypeEnum {
   BAR_CHART = 'bar chart',
@@ -115,6 +123,11 @@ export interface ConfigurationDataIntegrationType {
   inputs?: ConfigurationDataIntegrationInputsType;
 }
 
+interface FileSourceType {
+  path: string;
+  project_path?: string;
+}
+
 export interface ConfigurationType {
   [CONFIG_KEY_DATA_PROVIDER]?: string;
   [CONFIG_KEY_DATA_PROVIDER_DATABASE]?: string;
@@ -140,8 +153,10 @@ export interface ConfigurationType {
     command?: string;
     disable_tests?: boolean;
   };
-  dynamic?: boolean;
+  disable_output_preview?: boolean;
+  dynamic?: boolean | any;
   file_path?: string;
+  file_source?: FileSourceType;
   global_data_product?: {
     outdated_after?: GlobalDataProductOutdatedAfterType;
     outdated_starting_at?: GlobalDataProductOutdatedStartingAtType;

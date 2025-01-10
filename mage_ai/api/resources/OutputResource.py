@@ -9,20 +9,35 @@ from mage_ai.data_preparation.models.block.data_integration.utils import (
     read_data_from_cache,
 )
 from mage_ai.data_preparation.models.block.utils import serialize_output
+from mage_ai.data_preparation.models.constants import DATAFRAME_SAMPLE_COUNT
 from mage_ai.data_preparation.models.pipeline import Pipeline
 from mage_ai.orchestration.db import safe_db_query
 from mage_ai.orchestration.db.models.schedules import BlockRun
+from mage_ai.settings.repo import get_repo_path
 
 
 class OutputResource(GenericResource):
     @classmethod
     @safe_db_query
-    def collection(self, query, meta, user, **kwargs):
+    def collection(self, query_arg, meta, user, **kwargs):
+        query = {}
+        for key in [
+            'sample_count',
+        ]:
+            value = query_arg.get(key, [None])
+            if value:
+                value = value[0]
+                if value is not None:
+                    query[key] = value
+
         parent_model = kwargs['parent_model']
 
         outputs = []
         if type(parent_model) is BlockRun:
-            outputs = parent_model.get_outputs()
+            outputs = parent_model.get_outputs(
+                sample_count=query.get('sample_count', DATAFRAME_SAMPLE_COUNT),
+                exclude_blank_variable_uuids=True,
+            )
 
         return self.build_result_set(
             outputs,
@@ -45,7 +60,8 @@ class OutputResource(GenericResource):
         model = dict(outputs=[])
 
         if block_uuid and pipeline_uuid:
-            pipeline = Pipeline.get(pipeline_uuid)
+            repo_path = get_repo_path(user=user)
+            pipeline = Pipeline.get(pipeline_uuid, repo_path=repo_path)
             block = pipeline.get_block(block_uuid)
 
             if block.is_data_integration():
@@ -98,10 +114,12 @@ class OutputResource(GenericResource):
                             else:
                                 output_serialized = serialize_output(block, output)
 
-                        model['outputs'].append(dict(
-                            data=output_serialized,
-                            uuid=stream_id,
-                        ))
+                        model['outputs'].append(
+                            dict(
+                                data=output_serialized,
+                                uuid=stream_id,
+                            )
+                        )
 
                         if refresh and persist:
                             persist_data_for_stream(
@@ -134,6 +152,8 @@ class OutputResource(GenericResource):
         sample_count = payload.get('sample_count') or None
         if sample_count:
             sample_count = int(sample_count)
+        else:
+            sample_count = DATAFRAME_SAMPLE_COUNT
 
         model = dict(outputs=[])
 
@@ -163,9 +183,11 @@ class OutputResource(GenericResource):
                         if not output_serialized:
                             output_serialized = serialize_output(block, output)
 
-                        model['outputs'].append(dict(
-                            data=output_serialized,
-                            uuid=stream_id,
-                        ))
+                        model['outputs'].append(
+                            dict(
+                                data=output_serialized,
+                                uuid=stream_id,
+                            )
+                        )
 
         return self(model, user, **kwargs)

@@ -13,8 +13,10 @@ import Spacing from '@oracle/elements/Spacing';
 import Text from '@oracle/elements/Text';
 import Tooltip from '@oracle/components/Tooltip';
 import api from '@api'
+import useProject from '@utils/models/project/useProject';
 import {
   BranchAlt,
+  Insights,
   DocumentIcon,
   Lightning,
   NavDashboard,
@@ -32,14 +34,17 @@ import {
 } from './index.style';
 import { PURPLE_BLUE } from '@oracle/styles/colors/gradients';
 import { PADDING_UNITS, UNIT } from '@oracle/styles/units/spacing';
-import { featureEnabled } from '@utils/models/project';
 import { pushAtIndex } from '@utils/array';
 
 const ICON_SIZE = 3 * UNIT;
 const DEFAULT_NAV_ITEMS = ({
+  featureEnabled,
   project,
+  projectPlatformActivated,
 }: {
+  featureEnabled: (featureUUID: FeatureUUIDEnum) => boolean;
   project?: ProjectType;
+  projectPlatformActivated?: boolean;
 }) => {
   let miscItems = [
     {
@@ -84,18 +89,6 @@ const DEFAULT_NAV_ITEMS = ({
     },
   ];
 
-  if (featureEnabled(project, FeatureUUIDEnum.COMPUTE_MANAGEMENT)) {
-    miscItems = pushAtIndex({
-      Icon: TripleBoxes,
-      id: 'compute',
-      label: () => 'Compute management (beta)',
-      linkProps: {
-        href: '/compute',
-      },
-    }, 4, miscItems);
-  }
-
-
   return [
     {
       id: 'main',
@@ -135,7 +128,7 @@ const DEFAULT_NAV_ITEMS = ({
         {
           Icon: HexagonAll,
           id: 'global-data-products',
-          label: () => 'Global data products (beta)',
+          label: () => 'Global data products',
           linkProps: {
             href: '/global-data-products',
           },
@@ -147,7 +140,7 @@ const DEFAULT_NAV_ITEMS = ({
       items: miscItems,
     },
   ];
-}
+};
 
 export type NavigationItem = {
   Icon?: any;
@@ -180,9 +173,16 @@ function VerticalNavigation({
   const router = useRouter();
   const { pathname } = router;
 
-  const { data } = api.projects.list();
-  const project: ProjectType = useMemo(() => data?.projects?.[0], [data]);
-  const defaultNavItems = useMemo(() => DEFAULT_NAV_ITEMS({ project }), [
+  const {
+    featureEnabled,
+    project,
+    projectPlatformActivated,
+  } = useProject();
+  const defaultNavItems = useMemo(() => DEFAULT_NAV_ITEMS({
+    featureEnabled,
+    project,
+    projectPlatformActivated,
+  }), [
     project,
   ]);
 
@@ -319,6 +319,7 @@ function VerticalNavigation({
 
     let clickEl = (
       <NavigationLinkStyle
+        data-testid="navigation_link"
         href="#"
         onClick={onClick}
         selected={selected}

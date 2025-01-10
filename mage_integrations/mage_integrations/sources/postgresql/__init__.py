@@ -17,12 +17,14 @@ from mage_integrations.sources.constants import (
     COLUMN_FORMAT_DATETIME,
     COLUMN_FORMAT_UUID,
     REPLICATION_METHOD_FULL_TABLE,
+    REPLICATION_METHOD_INCREMENTAL,
     REPLICATION_METHOD_LOG_BASED,
 )
 from mage_integrations.sources.messages import write_state
 from mage_integrations.sources.postgresql.decoders import (
     Delete,
     Insert,
+    Relation,
     Update,
     decode_message,
 )
@@ -59,28 +61,99 @@ class PostgreSQL(Source):
     def build_discover_query(self, streams: List[str] = None):
         schema = self.config['schema']
 
+        """
+        pg_constraint: stores information about constraints defined on tables in the database.
+        * conrelid: The OID of the table on which the constraint is defined.
+        * conkey: For FOREIGN KEY constraints, this column contains an array of the local column
+            numbers of the referencing columns.
+        * contype: A single-character code representing the type of constraint. Possible values are:
+            'p' for PRIMARY KEY constraints
+            'u' for UNIQUE constraints
+            'c' for CHECK constraints
+            'f' for FOREIGN KEY constraints
+            'x' for EXCLUSION constraints
+
+        pg_class: stores metadata about database objects, primarily tables and indexes.
+        * oid: used to uniquely identify database objects such as tables, indexes, sequences, and
+            other database elements.
+        * relnamespace: The OID of the namespace (schema) in which the table or index is defined.
+        * relkind: A single-character code representing the type of relation.
+            'r': Regular table
+            'v': View
+            'm': Materialized view
+            'f': Foreign table
+
+        pg_namespace: stores information about database namespaces, also known as schemas.
+        * oid: The OID (object identifier) column stores a unique identifier for each namespace.
+            This column serves as the primary key for the table.
+
+        pg_attribute: contains metadata about the attributes (columns) of tables.
+        * attrelid: stores the OID (object identifier) of the table.
+        * attname: stores the name of the attribute (column).
+        * atttypid: stores the OID of the data type of the attribute.
+        * atttypmod: stores the type modifier of the attribute. It specifies additional information
+            about the data type, such as length, precision, or scale.
+        * attnum: stores the attribute number (column number) within the table or composite type.
+            It serves as the ordinal position of the attribute within the table.
+        * attnotnull: stores information about whether an attribute allows NULL values or not.
+        * attisdropped: whether the attribute has been dropped (removed) from the table.
+
+        pg_attrdef: stores default values for table columns.
+        * adbin:  stores the binary representation of the default value expression. It contains the
+            actual expression defining the default value.
+        * adrelid: stores the OID (object identifier) of the table to which the default value
+            belongs. It serves as a foreign key referencing the pg_class table.
+        """
         query = f"""
-SELECT
-    c.table_name
-    , c.column_default
-    , tc.constraint_type AS column_key
-    , c.column_name
-    , c.data_type
-    , c.is_nullable
-FROM information_schema.columns c
-LEFT JOIN information_schema.constraint_column_usage AS ccu
-ON c.column_name = ccu.column_name
-    AND c.table_name = ccu.table_name
-    AND c.table_schema = ccu.table_schema
-LEFT JOIN information_schema.table_constraints AS tc
-ON tc.constraint_schema = ccu.constraint_schema
-    AND tc.constraint_name = ccu.constraint_name
-WHERE  c.table_schema = '{schema}'
+WITH unnested_constraints AS (
+    SELECT
+        conrelid,
+        UNNEST(conkey) AS conkey,
+        contype
+    FROM
+        pg_constraint
+)
+
+SELECT DISTINCT
+    pg_class.relname AS table_name,
+    pg_get_expr(pg_attrdef.adbin, pg_attrdef.adrelid) AS column_default,
+    CASE
+        WHEN contype = 'p'
+            THEN 'PRIMARY KEY'
+        WHEN contype = 'f'
+            THEN 'FOREIGN KEY'
+        WHEN contype = 'u'
+            THEN 'UNIQUE'
+    END AS column_key,
+    pg_attribute.attname AS column_name,
+    format_type(pg_attribute.atttypid, pg_attribute.atttypmod) AS data_type,
+    CASE
+        WHEN pg_attribute.attnotnull
+            THEN 'NO'
+        WHEN NOT pg_attribute.attnotnull
+            THEN 'YES'
+    END AS is_nullable
+FROM pg_class
+LEFT JOIN
+    pg_namespace ON pg_class.relnamespace = pg_namespace.oid
+LEFT JOIN
+    pg_attribute ON pg_class.oid = pg_attribute.attrelid
+LEFT JOIN
+    unnested_constraints ON pg_class.oid = unnested_constraints.conrelid
+        AND pg_attribute.attnum = unnested_constraints.conkey
+LEFT JOIN
+    pg_attrdef ON pg_class.oid = pg_attrdef.adrelid
+        AND pg_attribute.attnum = pg_attrdef.adnum
+WHERE
+  pg_attribute.attnum > -1
+    AND pg_attribute.attisdropped = 'f'
+    AND pg_class.relkind IN ('r', 'v', 'm', 'f')
+    AND nspname = '{schema}'
         """
 
         if streams:
             table_names = ', '.join([f"'{n}'" for n in streams])
-            query = f'{query}\nAND c.TABLE_NAME IN ({table_names})'
+            query = f'{query}\nAND pg_class.relname IN ({table_names})'
         return query
 
     def get_columns(self, table_name: str) -> List[str]:
@@ -92,13 +165,13 @@ SELECT
 FROM INFORMATION_SCHEMA.COLUMNS
 WHERE TABLE_NAME = '{table_name}' AND TABLE_SCHEMA = '{schema_name}'
         """)
-        return [r[0].lower() for r in results]
+        return [r[0] for r in results]
 
     def internal_column_schema(self, stream, bookmarks: Dict = None) -> Dict[str, Dict]:
         if REPLICATION_METHOD_LOG_BASED == stream.replication_method:
             return {
                 INTERNAL_COLUMN_DELETED_AT: DATETIME_COLUMN_SCHEMA,
-                INTERNAL_COLUMN_LSN: {'type': ['integer']},
+                INTERNAL_COLUMN_LSN: {'type': ['null', 'integer']},
             }
         return dict()
 
@@ -153,6 +226,8 @@ WHERE TABLE_NAME = '{table_name}' AND TABLE_SCHEMA = '{schema_name}'
                 raise Exception(f'Unable to start replication with logical replication slot {slot}')
 
             columns = self.get_columns(tap_stream_id)
+            # Map from relation id to relation name
+            relations = dict()
             while True:
                 poll_duration = (datetime.datetime.now() - begin_ts).total_seconds()
                 if poll_duration > poll_total_seconds:
@@ -166,12 +241,24 @@ WHERE TABLE_NAME = '{table_name}' AND TABLE_SCHEMA = '{schema_name}'
                     if msg.data_start > end_lsn:
                         self.logger.info(f'Gone past end_lsn {end_lsn} for run. breaking')
                         break
-
                     decoded_payload = decode_message(msg.payload)
+
+                    if type(decoded_payload) is Relation:
+                        relations[decoded_payload.relation_id] = decoded_payload.relation_name
+
                     if msg.data_start < start_lsn:
                         self.logger.info(
                             f'Msg lsn {msg.data_start} smaller than start lsn {start_lsn}')
                         continue
+
+                    if not type(decoded_payload) in [Delete, Insert, Update]:
+                        continue
+
+                    relation_name = relations.get(decoded_payload.relation_id)
+                    # Skip if the relation name doesn't match the stream name
+                    if not relation_name or relation_name != stream.tap_stream_id:
+                        continue
+
                     if type(decoded_payload) in [Insert, Update]:
                         values = [c.col_data for c in decoded_payload.new_tuple.column_data]
                         payload = dict(zip(columns, values))
@@ -231,6 +318,9 @@ WHERE TABLE_NAME = '{table_name}' AND TABLE_SCHEMA = '{schema_name}'
     def _get_bookmark_properties_for_stream(self, stream, bookmarks: Dict = None) -> List[str]:
         if REPLICATION_METHOD_LOG_BASED == self._replication_method(stream, bookmarks=bookmarks):
             return [INTERNAL_COLUMN_LSN]
+        elif REPLICATION_METHOD_LOG_BASED == stream.replication_method:
+            # Initial sync for LOG_BASED replication
+            return self._get_replication_key(stream)
         else:
             return super()._get_bookmark_properties_for_stream(stream)
 
@@ -239,7 +329,11 @@ WHERE TABLE_NAME = '{table_name}' AND TABLE_SCHEMA = '{schema_name}'
             return stream.replication_method
         # Ues full table sync for the initial sync of log based replcation
         if not bookmarks or not bookmarks.get(INTERNAL_COLUMN_LSN):
-            return REPLICATION_METHOD_FULL_TABLE
+            if self._get_replication_key(stream):
+                # If bookmark columns are selected, use incremental sync as the initial sync
+                return REPLICATION_METHOD_INCREMENTAL
+            else:
+                return REPLICATION_METHOD_FULL_TABLE
 
         return stream.replication_method
 

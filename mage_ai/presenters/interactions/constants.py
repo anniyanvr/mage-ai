@@ -1,20 +1,21 @@
-from enum import Enum
+from mage_ai.shared.enum import StrEnum
 
 INTERACTIONS_DIRECTORY_NAME = 'interactions'
 
 
-class InteractionInputType(str, Enum):
+class InteractionInputType(StrEnum):
     CHECKBOX = 'checkbox'
+    CODE = 'code'
     DROPDOWN_MENU = 'dropdown_menu'
     SWITCH = 'switch'
     TEXT_FIELD = 'text_field'
 
 
-class InteractionInputStyleInputType(str, Enum):
+class InteractionInputStyleInputType(StrEnum):
     NUMBER = 'number'
 
 
-class InteractionVariableType(str, Enum):
+class InteractionVariableType(StrEnum):
     BOOLEAN = 'boolean'
     DATE = 'date'
     DATETIME = 'datetime'

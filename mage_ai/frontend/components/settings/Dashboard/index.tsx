@@ -1,10 +1,11 @@
 import Dashboard from '@components/Dashboard';
 import VerticalSectionLinks from '@components/VerticalSectionLinks';
+import useGetUser from '@utils/hooks/useGetUser';
+import useProject from '@utils/models/project/useProject';
 import { BEFORE_WIDTH, BeforeStyle } from '@components/PipelineDetail/shared/index.style';
 import { BreadcrumbType } from '@components/shared/Header';
 import { SECTIONS } from './constants';
 import { UNIT } from '@oracle/styles/units/spacing';
-import { getUser } from '@utils/session';
 
 type SettingsDashboardProps = {
   after?: any;
@@ -35,7 +36,10 @@ function SettingsDashboard({
   uuidItemSelected,
   uuidWorkspaceSelected,
 }: SettingsDashboardProps) {
-  const user = getUser() || {};
+  const user = useGetUser() || {};
+  const {
+    projectPlatformActivated,
+  } = useProject();
 
   return (
     <Dashboard
@@ -55,7 +59,9 @@ function SettingsDashboard({
               uuid,
               uuidWorkspace,
             }) => uuidWorkspaceSelected === uuidWorkspace && uuidItemSelected === uuid}
-            sections={SECTIONS(user)}
+            sections={SECTIONS(user, {
+              projectPlatformActivated,
+            })}
           />
         </BeforeStyle>
       )}

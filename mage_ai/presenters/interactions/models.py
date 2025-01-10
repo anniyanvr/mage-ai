@@ -1,7 +1,7 @@
 import os
 from dataclasses import dataclass, field
 from functools import reduce
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import yaml
 
@@ -19,14 +19,15 @@ from mage_ai.presenters.interactions.constants import (
 from mage_ai.presenters.interactions.utils import interpolate_content
 from mage_ai.settings.repo import get_repo_path
 from mage_ai.shared.hash import merge_dict
+from mage_ai.shared.models import BaseDataClass
 
 
 @dataclass
-class InteractionInputOption:
+class InteractionInputOption(BaseDataClass):
     label: str = None
     value: Union[bool, float, int, str] = None
 
-    def to_dict(self) -> Dict:
+    def to_dict(self, **kwargs) -> Dict:
         return dict(
             label=self.label,
             value=self.value,
@@ -36,6 +37,8 @@ class InteractionInputOption:
 @dataclass
 class InteractionInputStyle:
     input_type: InteractionInputStyleInputType = None
+    language: str = None
+    monospace: Optional[bool] = None
     multiline: bool = None
 
     def __post_init__(self):
@@ -65,10 +68,10 @@ class InteractionInput:
         if self.type and isinstance(self.type, str):
             self.type = InteractionInputType(self.type)
 
-    def to_dict(self) -> Dict:
+    def to_dict(self, **kwargs) -> Dict:
         return dict(
-            options=[i.to_dict() for i in self.options],
-            style=self.style.to_dict() if self.style else None,
+            options=[i.to_dict(**kwargs) for i in self.options],
+            style=self.style.to_dict(**kwargs) if self.style else None,
             type=self.type.value if self.type else None,
         )
 
@@ -142,14 +145,14 @@ class Interaction:
         return self._content
 
     async def content_parsed(self, interpolate_variables: bool = False) -> Dict:
-        if self._content_parsed is not None or \
-                BlockLanguage.YAML != self.language:
-
+        if self._content_parsed is not None or BlockLanguage.YAML != self.language:
             return self._content_parsed
 
         text = await self.content_async()
         self._content_parsed = yaml.safe_load(
-            interpolate_content(text, self.__pipeline_variables) if interpolate_variables else text,
+            interpolate_content(text, self.__pipeline_variables)
+            if interpolate_variables
+            else text,
         )
 
         return self._content_parsed
@@ -171,7 +174,7 @@ class Interaction:
     async def layout(self) -> Dict:
         settings = await self.content_parsed() or {}
         rows = []
-        for row in (settings.get('layout') or []):
+        for row in settings.get('layout') or []:
             items = []
             for item in row:
                 items.append(InteractionLayoutItem(**item))
@@ -197,7 +200,7 @@ class Interaction:
         for _uuid, item in (settings.get('inputs') or {}).items():
             InteractionInput(**item)
 
-        for row in (settings.get('layout') or []):
+        for row in settings.get('layout') or []:
             for item in row:
                 InteractionLayoutItem(**item)
 
@@ -285,4 +288,8 @@ class Interaction:
 
     @property
     def __repo_path(self) -> str:
-        return self.pipeline.repo_path if self.pipeline is not None else get_repo_path()
+        return (
+            self.pipeline.repo_path
+            if self.pipeline is not None
+            else get_repo_path(root_project=True)
+        )
